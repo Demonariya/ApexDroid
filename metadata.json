@@ -1,0 +1,6 @@
+{
+  "name": "ApexDroid - Android Management Suite",
+  "description": "Production-grade Android desktop management suite powered by Rust and Tauri with ADB, scrcpy mirroring, file explorer, package manager, and diagnostic terminal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
