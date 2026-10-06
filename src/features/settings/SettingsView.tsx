@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   Languages,
@@ -32,6 +32,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [formData, setFormData] = useState<AppSettings>({ ...settings });
   const [isSaving, setIsSaving] = useState(false);
   const t = translations[language];
+
+  useEffect(() => {
+    setFormData({ ...settings });
+  }, [settings]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

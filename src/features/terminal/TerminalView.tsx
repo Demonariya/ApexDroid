@@ -19,7 +19,9 @@ import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 interface TerminalViewProps {
   selectedDevice: DeviceDetails | null;
   language: Language;
-  onExecuteShell: (serial: string, command: string) => Promise<string>;
+  confirmDestructive?: boolean;
+  onExecuteCommand?: (serial: string, command: string) => Promise<string>;
+  onExecuteShell?: (serial: string, command: string) => Promise<string>;
   onNotify: (type: 'info' | 'success' | 'warning' | 'error', title: string, msg: string) => void;
 }
 
@@ -34,24 +36,21 @@ interface CommandLog {
 export const TerminalView: React.FC<TerminalViewProps> = ({
   selectedDevice,
   language,
+  confirmDestructive,
+  onExecuteCommand,
   onExecuteShell,
   onNotify,
 }) => {
+  const runShell = onExecuteCommand || onExecuteShell || (async () => '');
   const [inputCommand, setInputCommand] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [logs, setLogs] = useState<CommandLog[]>([
     {
       id: 'init-1',
-      command: 'adb version',
-      output: 'Android Debug Bridge version 1.0.41\nVersion 34.0.5-windows\nInstalled as C:\\Program Files\\ApexDroid\\adb.exe',
-      timestamp: '14:20:00',
-    },
-    {
-      id: 'init-2',
-      command: 'getprop ro.product.model',
-      output: selectedDevice?.model || 'SM-S928B',
-      timestamp: '14:20:01',
+      command: 'echo "ApexDroid Terminal Ready"',
+      output: 'Interactive ADB shell session initialized. Enter remote shell commands.',
+      timestamp: new Date().toTimeString().split(' ')[0],
     },
   ]);
   const [isExecuting, setIsExecuting] = useState(false);
@@ -97,7 +96,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
     const ts = new Date().toTimeString().split(' ')[0];
 
     try {
-      const output = await onExecuteShell(selectedDevice.serial, cmd.trim());
+      const output = await runShell(selectedDevice.serial, cmd.trim());
       setLogs((prev) => [
         ...prev,
         {

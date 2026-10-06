@@ -587,6 +587,60 @@ class SimulatedAdbEngine {
     return !!this.isMirroringMap[serial];
   }
 
+  isRecording(_serial: string): boolean {
+    return false;
+  }
+
+  async pullFile(serial: string, remotePath: string, localPath: string): Promise<number> {
+    const entry = this.virtualFiles[serial]?.find((f) => f.path === remotePath);
+    const size = entry ? entry.size_bytes : 10240;
+    this.addLog('INFO', 'fs', `Pulled ${remotePath} -> ${localPath} (${size} bytes)`, serial);
+    return size;
+  }
+
+  async pushFile(serial: string, localPath: string, remotePath: string): Promise<number> {
+    const fileName = localPath.split(/[/\\]/).pop() || 'uploaded_file';
+    if (!this.virtualFiles[serial]) {
+      this.virtualFiles[serial] = [];
+    }
+    const size = 25600;
+    this.virtualFiles[serial].push({
+      name: fileName,
+      path: `${remotePath.replace(/\/$/, '')}/${fileName}`,
+      file_type: 'File',
+      size_bytes: size,
+      permissions: '-rw-rw----',
+      owner: 'u0_a123',
+      group: 'sdcard_rw',
+      modified_epoch: Date.now(),
+      modified_str: new Date().toISOString().substring(0, 16).replace('T', ' '),
+      is_hidden: false,
+      extension: fileName.split('.').pop(),
+    });
+    this.addLog('INFO', 'fs', `Pushed ${localPath} -> ${remotePath}/${fileName} (${size} bytes)`, serial);
+    return size;
+  }
+
+  async getLogcat(serial: string, maxLines?: number, filter?: string): Promise<string[]> {
+    const logs = [
+      '03-08 14:40:01.120  1450  1450 I ActivityManager: START u0 {act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER]}',
+      '03-08 14:40:01.240  1450  2100 D WindowManager: Relayout Window: viewVisibility=0 req=1440x3120',
+      '03-08 14:40:01.350  2450  2450 I Choreographer: Skipped 0 frames! Application rendering nominal.',
+      '03-08 14:40:02.010  1200  1200 D PowerManagerService: userActivityNoUpdateLocked: eventTime=142800000, event=2, flags=0x0, uid=1000',
+      '03-08 14:40:02.150  1000  1050 I BatteryStatsService: updating capacity: 88%',
+      '03-08 14:40:02.400  1100  1120 D WifiService: handleScreenStateChanged: screenOn=true',
+    ];
+    if (filter) {
+      const q = filter.toLowerCase();
+      return logs.filter((l) => l.toLowerCase().includes(q));
+    }
+    return logs.slice(0, maxLines || 100);
+  }
+
+  async clearLogcat(serial: string): Promise<void> {
+    this.addLog('INFO', 'logcat', `Cleared logcat buffer for ${serial}`, serial);
+  }
+
   async sendKeyEvent(serial: string, keycode: string): Promise<void> {
     this.addLog('INFO', 'input', `Keyevent ${keycode} dispatched to ${serial}`, serial);
   }

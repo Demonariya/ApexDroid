@@ -152,27 +152,29 @@ export const DeviceDetailModal: React.FC<DeviceDetailModalProps> = ({
             <div className="grid grid-cols-2 gap-4 text-xs">
               <div className="p-3.5 rounded-lg bg-[#0b0f19] border border-neutral-800">
                 <div className="text-neutral-400 text-[11px] mb-1">Android OS Version</div>
-                <div className="text-white font-medium text-sm">{device.software?.android_version || '14.0'}</div>
-                <div className="text-neutral-400 text-[11px] mt-0.5">API Level {device.software?.api_level || 34}</div>
+                <div className="text-white font-medium text-sm">{device.software?.android_version || 'Unknown'}</div>
+                <div className="text-neutral-400 text-[11px] mt-0.5">
+                  {device.software?.api_level ? `API Level ${device.software.api_level}` : 'API Level Unavailable'}
+                </div>
               </div>
 
               <div className="p-3.5 rounded-lg bg-[#0b0f19] border border-neutral-800">
                 <div className="text-neutral-400 text-[11px] mb-1">Display & Resolution</div>
                 <div className="text-white font-medium text-sm">
-                  {device.display ? `${device.display.width} × ${device.display.height}` : '1080 × 2400'}
+                  {device.display ? `${device.display.width} × ${device.display.height}` : 'Unavailable'}
                 </div>
                 <div className="text-neutral-400 text-[11px] mt-0.5">
-                  {device.display?.density_dpi} DPI · {device.display?.refresh_rate || 120} Hz
+                  {device.display ? `${device.display.density_dpi} DPI · ${device.display.refresh_rate ? `${device.display.refresh_rate} Hz` : 'Standard'}` : 'N/A'}
                 </div>
               </div>
 
               <div className="p-3.5 rounded-lg bg-[#0b0f19] border border-neutral-800">
                 <div className="text-neutral-400 text-[11px] mb-1">Processor (SoC)</div>
                 <div className="text-white font-medium text-sm truncate">
-                  {device.hardware?.soc_model || 'Qualcomm Snapdragon 8 Gen 3'}
+                  {device.hardware?.soc_model || 'Unknown SoC'}
                 </div>
                 <div className="text-neutral-400 text-[11px] mt-0.5">
-                  {device.hardware?.cpu_architecture} · {device.hardware?.cpu_cores} Cores
+                  {device.hardware?.cpu_architecture || 'Unknown Arch'} · {device.hardware?.cpu_cores ? `${device.hardware.cpu_cores} Cores` : 'Cores Unknown'}
                 </div>
               </div>
 
@@ -196,19 +198,19 @@ export const DeviceDetailModal: React.FC<DeviceDetailModalProps> = ({
                   <span className="text-white font-mono">{device.hardware?.cpu_architecture}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-neutral-800/60">
-                  <span className="text-neutral-400">CPU Core Topology</span>
-                  <span className="text-white">{device.hardware?.cpu_cores} Cores (1x Prime + 5x Performance + 2x Efficiency)</span>
+                  <span className="text-neutral-400">CPU Cores</span>
+                  <span className="text-white">{device.hardware?.cpu_cores ? `${device.hardware.cpu_cores} Active Processors` : 'Unavailable'}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-neutral-800/60">
                   <span className="text-neutral-400">Total System RAM</span>
                   <span className="text-white tabular-nums">
-                    {device.hardware ? `${(device.hardware.ram_total_mb / 1024).toFixed(0)} GB LPDDR5X` : '12 GB'}
+                    {device.hardware?.ram_total_mb ? `${(device.hardware.ram_total_mb / 1024).toFixed(0)} GB` : 'Unavailable'}
                   </span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-neutral-800/60">
                   <span className="text-neutral-400">Available Free RAM</span>
                   <span className="text-white tabular-nums">
-                    {device.hardware ? `${(device.hardware.ram_avail_mb / 1024).toFixed(1)} GB` : '6.5 GB'}
+                    {device.hardware?.ram_avail_mb ? `${(device.hardware.ram_avail_mb / 1024).toFixed(1)} GB` : 'Unavailable'}
                   </span>
                 </div>
                 <div className="flex justify-between py-1">

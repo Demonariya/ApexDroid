@@ -63,12 +63,13 @@ export const ipc = {
     return adbEngine.sendKeyEvent(serial, keycode);
   },
 
-  async takeScreenshot(serial: string, destinationPath: string): Promise<void> {
+  async takeScreenshot(serial: string, destinationPath: string): Promise<number> {
     if (isTauriEnvironment()) {
       const { invoke } = await import('@tauri-apps/api/core');
-      return await invoke<void>('take_screenshot', { serial, destinationPath });
+      return await invoke<number>('take_screenshot', { serial, destinationPath });
     }
-    return adbEngine.takeScreenshot(serial, destinationPath);
+    await adbEngine.takeScreenshot(serial, destinationPath);
+    return 1450200; // Simulated PNG byte size
   },
 
   async connectWirelessDevice(hostPort: string): Promise<string> {
@@ -125,6 +126,22 @@ export const ipc = {
       return await invoke<void>('rename_file', { serial, oldPath, newPath });
     }
     return adbEngine.renameFile(serial, oldPath, newPath);
+  },
+
+  async pullFile(serial: string, remotePath: string, localPath: string): Promise<number> {
+    if (isTauriEnvironment()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<number>('pull_file', { serial, remotePath, localPath });
+    }
+    return adbEngine.pullFile(serial, remotePath, localPath);
+  },
+
+  async pushFile(serial: string, localPath: string, remotePath: string): Promise<number> {
+    if (isTauriEnvironment()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<number>('push_file', { serial, localPath, remotePath });
+    }
+    return adbEngine.pushFile(serial, localPath, remotePath);
   },
 
   async listPackages(serial: string, filter: string): Promise<AppPackage[]> {
@@ -207,6 +224,30 @@ export const ipc = {
     return adbEngine.isMirroring(serial);
   },
 
+  async isScrcpyRecording(serial: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<boolean>('is_scrcpy_recording', { serial });
+    }
+    return adbEngine.isRecording(serial);
+  },
+
+  async getLogcat(serial: string, maxLines?: number, filter?: string): Promise<string[]> {
+    if (isTauriEnvironment()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<string[]>('get_logcat', { serial, maxLines, filter });
+    }
+    return adbEngine.getLogcat(serial, maxLines, filter);
+  },
+
+  async clearLogcat(serial: string): Promise<void> {
+    if (isTauriEnvironment()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<void>('clear_logcat', { serial });
+    }
+    return adbEngine.clearLogcat(serial);
+  },
+
   async runBackup(plan: BackupPlan): Promise<BackupManifest> {
     if (isTauriEnvironment()) {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -223,10 +264,10 @@ export const ipc = {
     return adbEngine.restoreBackup(serial, backupDir);
   },
 
-  async cancelBackup(): Promise<void> {
+  async cancelBackup(serial?: string): Promise<void> {
     if (isTauriEnvironment()) {
       const { invoke } = await import('@tauri-apps/api/core');
-      return await invoke<void>('cancel_backup');
+      return await invoke<void>('cancel_backup', { serial: serial || '' });
     }
     return adbEngine.cancelBackup();
   },
@@ -252,14 +293,74 @@ export const ipc = {
       const { invoke } = await import('@tauri-apps/api/core');
       return await invoke<AppSettings>('get_settings');
     }
+    const saved = localStorage.getItem('apexdroid_settings');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {}
+    }
     return adbEngine.getSettings();
   },
 
   async saveSettings(settings: AppSettings): Promise<void> {
+    localStorage.setItem('apexdroid_settings', JSON.stringify(settings));
     if (isTauriEnvironment()) {
       const { invoke } = await import('@tauri-apps/api/core');
-      return await invoke<void>('save_settings', { settings });
+      await invoke<void>('save_settings', { settings });
+      return;
     }
     return adbEngine.saveSettings(settings);
+  },
+
+  async pickFile(options?: { title?: string; filters?: { name: string; extensions: string[] }[] }): Promise<string | null> {
+    if (isTauriEnvironment()) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const res = await open({
+          multiple: false,
+          directory: false,
+          title: options?.title || 'Select File',
+          filters: options?.filters,
+        });
+        if (typeof res === 'string') return res;
+      } catch (e) {
+        console.warn('Native open dialog failed:', e);
+      }
+    }
+    return prompt(options?.title || 'Enter absolute local file path:');
+  },
+
+  async pickSaveFile(options?: { title?: string; defaultPath?: string; filters?: { name: string; extensions: string[] }[] }): Promise<string | null> {
+    if (isTauriEnvironment()) {
+      try {
+        const { save } = await import('@tauri-apps/plugin-dialog');
+        const res = await save({
+          title: options?.title || 'Save File',
+          defaultPath: options?.defaultPath,
+          filters: options?.filters,
+        });
+        if (typeof res === 'string') return res;
+      } catch (e) {
+        console.warn('Native save dialog failed:', e);
+      }
+    }
+    return prompt(options?.title || 'Enter destination file path:', options?.defaultPath || 'C:\\ApexDroid\\output.png');
+  },
+
+  async pickDirectory(title?: string): Promise<string | null> {
+    if (isTauriEnvironment()) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const res = await open({
+          directory: true,
+          multiple: false,
+          title: title || 'Select Folder',
+        });
+        if (typeof res === 'string') return res;
+      } catch (e) {
+        console.warn('Native folder dialog failed:', e);
+      }
+    }
+    return prompt(title || 'Enter folder path:', 'C:\\ApexDroid_Backups');
   },
 };

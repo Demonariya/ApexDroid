@@ -1,14 +1,13 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ActiveTab,
   AppSettings,
   DeviceDetails,
-  FileEntry,
   LogMessage,
   ScrcpyConfig,
   ToastNotification,
 } from './types';
-import { Language, translations } from './lib/i18n';
+import { Language } from './lib/i18n';
 import { ipc } from './lib/ipc';
 import { Sidebar } from './components/layout/Sidebar';
 import { TopBar } from './components/layout/TopBar';
@@ -37,7 +36,7 @@ export default function App() {
     language: 'en',
     adb_path: 'adb',
     scrcpy_path: 'scrcpy',
-    default_download_path: '~/Downloads/ApexDroid',
+    default_download_path: 'C:\\ApexDroid\\Downloads',
     polling_interval_ms: 2500,
     auto_connect_wireless: true,
     confirm_destructive_actions: true,
@@ -53,6 +52,13 @@ export default function App() {
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
   const [pendingReboot, setPendingReboot] = useState<{ serial: string; mode?: string } | null>(null);
 
+  const isRefreshingRef = useRef(false);
+  const activeDeviceRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeDeviceRef.current = selectedDevice?.serial || null;
+  }, [selectedDevice?.serial]);
+
   // Set document dir for Persian RTL support
   useEffect(() => {
     document.documentElement.dir = language === 'fa' ? 'rtl' : 'ltr';
@@ -65,7 +71,7 @@ export default function App() {
       setToasts((prev) => [...prev, { id, type, title, message, timestamp: Date.now() }]);
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id));
-      }, 4000);
+      }, 4500);
     },
     []
   );
@@ -74,8 +80,8 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Fetch initial data
-  const loadDevices = useCallback(async () => {
+  // Fetch initial data returning the latest devices list to avoid stale closures
+  const loadDevices = useCallback(async (): Promise<DeviceDetails[]> => {
     try {
       const list = await ipc.getDevices();
       setDevices(list);
@@ -88,8 +94,10 @@ export default function App() {
       } else {
         setSelectedDevice(null);
       }
+      return list;
     } catch (err: any) {
       console.error('Failed to load devices:', err);
+      return [];
     }
   }, []);
 
@@ -119,48 +127,35 @@ export default function App() {
 
     // Background polling interval
     const interval = setInterval(() => {
-      loadDevices();
-      loadLogs();
+      if (!isRefreshingRef.current) {
+        loadDevices();
+        loadLogs();
+      }
     }, settings.polling_interval_ms || 2500);
 
     return () => clearInterval(interval);
   }, [loadDevices, loadLogs, loadSettings, settings.polling_interval_ms]);
 
-  // Global keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setIsCommandPaletteOpen((prev) => !prev);
-      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        handleTakeScreenshot();
-      } else if (e.key === 'Escape') {
-        setIsCommandPaletteOpen(false);
-        setShowWirelessModal(false);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedDevice]);
-
   // Actions
   const handleRefreshDevices = async () => {
+    if (isRefreshingRef.current) return;
+    isRefreshingRef.current = true;
     setIsRefreshing(true);
-    await loadDevices();
-    await loadLogs();
-    setTimeout(() => {
+    try {
+      const updatedDevices = await loadDevices();
+      await loadLogs();
+      addToast('info', 'Scan Complete', `Found ${updatedDevices.length} connected device${updatedDevices.length === 1 ? '' : 's'}.`);
+    } finally {
       setIsRefreshing(false);
-      addToast('info', 'Scan Complete', `Found ${devices.length} active devices.`);
-    }, 600);
+      isRefreshingRef.current = false;
+    }
   };
 
   const handleRestartAdb = async () => {
     setIsRestartingAdb(true);
     try {
-      await ipc.restartAdb();
-      addToast('success', 'ADB Restarted', 'Daemon killed and restarted on port 5037.');
+      const res = await ipc.restartAdb();
+      addToast('success', 'ADB Restarted', res || 'Daemon killed and restarted on port 5037.');
       await loadDevices();
       await loadLogs();
     } catch (err: any) {
@@ -170,12 +165,34 @@ export default function App() {
     }
   };
 
-  const handleTakeScreenshot = () => {
+  const handleTakeScreenshot = async () => {
     if (!selectedDevice) {
-      addToast('warning', 'No Device', 'Select a device to take a screenshot.');
+      addToast('warning', 'No Device', 'Select a connected device to capture a screenshot.');
       return;
     }
-    addToast('success', 'Screenshot Captured', `Saved frame buffer of ${selectedDevice.model} to PNG.`);
+
+    const defaultFilename = `screenshot_${selectedDevice.model.replace(/\s+/g, '_')}_${Date.now()}.png`;
+    const defaultPath = `${settings.default_download_path.replace(/[\\/]$/, '')}/${defaultFilename}`;
+
+    const savePath = await ipc.pickSaveFile({
+      title: 'Save Device Screenshot',
+      defaultPath,
+      filters: [{ name: 'PNG Image', extensions: ['png'] }],
+    });
+
+    if (!savePath) {
+      return; // User cancelled
+    }
+
+    try {
+      addToast('info', 'Capturing', `Requesting framebuffer from ${selectedDevice.model}...`);
+      const bytes = await ipc.takeScreenshot(selectedDevice.serial, savePath);
+      const kb = (bytes / 1024).toFixed(1);
+      addToast('success', 'Screenshot Saved', `Saved ${kb} KB image to ${savePath}`);
+      await loadLogs();
+    } catch (err: any) {
+      addToast('error', 'Capture Failed', err.message || 'Failed to capture or transfer screenshot');
+    }
   };
 
   const handleRebootDevice = (mode?: string) => {
@@ -200,27 +217,59 @@ export default function App() {
     }
   };
 
-  const handleToggleLanguage = () => {
+  const handleToggleLanguage = async () => {
     const next = language === 'en' ? 'fa' : 'en';
+    const updated = { ...settings, language: next };
     setLanguage(next);
-    setSettings((prev) => ({ ...prev, language: next }));
-    ipc.saveSettings({ ...settings, language: next });
-    addToast('info', 'Language Changed', next === 'fa' ? 'زبان به فارسی تغییر کرد' : 'Language set to English');
+    setSettings(updated);
+    try {
+      await ipc.saveSettings(updated);
+      addToast('info', 'Language Changed', next === 'fa' ? 'زبان به فارسی تغییر کرد' : 'Language set to English');
+    } catch (e: any) {
+      addToast('error', 'Settings Error', e.message || 'Failed to persist language setting');
+    }
   };
 
   const handleConnectWireless = async (hostPort: string) => {
-    const res = await ipc.connectWirelessDevice(hostPort);
-    addToast('success', 'Wireless Connected', res);
-    await loadDevices();
-    await loadLogs();
+    try {
+      const res = await ipc.connectWirelessDevice(hostPort);
+      addToast('success', 'Wireless Connected', res);
+      await loadDevices();
+      await loadLogs();
+    } catch (e: any) {
+      addToast('error', 'Connection Failed', e.message || 'Failed to connect');
+    }
   };
 
   const handlePairWireless = async (hostPort: string, code: string) => {
-    const res = await ipc.pairWirelessDevice(hostPort, code);
-    addToast('success', 'Paired Successfully', res);
-    await loadDevices();
-    await loadLogs();
+    try {
+      const res = await ipc.pairWirelessDevice(hostPort, code);
+      addToast('success', 'Paired Successfully', res);
+      await loadDevices();
+      await loadLogs();
+    } catch (e: any) {
+      addToast('error', 'Pairing Failed', e.message || 'Failed to pair');
+    }
   };
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen((prev) => !prev);
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        handleTakeScreenshot();
+      } else if (e.key === 'Escape') {
+        setIsCommandPaletteOpen(false);
+        setShowWirelessModal(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedDevice, settings.default_download_path]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#090b10] text-neutral-100 font-sans select-none">
@@ -258,13 +307,13 @@ export default function App() {
             <DashboardView
               devices={devices}
               selectedDevice={selectedDevice}
-              onSelectDevice={setSelectedDevice}
-              setActiveTab={setActiveTab}
               language={language}
+              onSelectDevice={setSelectedDevice}
+              onNavigateTab={setActiveTab}
               onTakeScreenshot={handleTakeScreenshot}
-              onRebootDevice={() => handleRebootDevice()}
+              onRebootDevice={handleRebootDevice}
               onRestartAdb={handleRestartAdb}
-              logs={logs}
+              onRefreshDevices={handleRefreshDevices}
             />
           )}
 
@@ -274,11 +323,10 @@ export default function App() {
               selectedDevice={selectedDevice}
               onSelectDevice={setSelectedDevice}
               language={language}
-              onRefresh={handleRefreshDevices}
-              isRefreshing={isRefreshing}
-              onConnectWireless={handleConnectWireless}
-              onPairWireless={handlePairWireless}
-              onRebootDevice={executeReboot}
+              onRefreshDevices={handleRefreshDevices}
+              onOpenWirelessModal={() => setShowWirelessModal(true)}
+              onRebootDevice={handleRebootDevice}
+              onNotify={addToast}
             />
           )}
 
@@ -286,6 +334,8 @@ export default function App() {
             <FileManagerView
               selectedDevice={selectedDevice}
               language={language}
+              defaultDownloadPath={settings.default_download_path}
+              confirmDestructive={settings.confirm_destructive_actions}
               onListFiles={ipc.listFiles}
               onCreateDirectory={ipc.createDirectory}
               onDeleteFile={ipc.deleteFile}
@@ -298,6 +348,7 @@ export default function App() {
             <AppsView
               selectedDevice={selectedDevice}
               language={language}
+              confirmDestructive={settings.confirm_destructive_actions}
               onListPackages={ipc.listPackages}
               onInstallApk={ipc.installApk}
               onUninstallApp={ipc.uninstallApp}
@@ -313,6 +364,7 @@ export default function App() {
             <ScreenMirrorView
               selectedDevice={selectedDevice}
               language={language}
+              defaultDownloadPath={settings.default_download_path}
               onStartScrcpy={ipc.startScrcpy}
               onStopScrcpy={ipc.stopScrcpy}
               onTakeScreenshot={handleTakeScreenshot}
@@ -324,7 +376,8 @@ export default function App() {
             <TerminalView
               selectedDevice={selectedDevice}
               language={language}
-              onExecuteShell={ipc.executeShell}
+              confirmDestructive={settings.confirm_destructive_actions}
+              onExecuteCommand={ipc.executeShell}
               onNotify={addToast}
             />
           )}
@@ -344,6 +397,7 @@ export default function App() {
             <BackupRestoreView
               selectedDevice={selectedDevice}
               language={language}
+              defaultPath={settings.default_download_path}
               onNotify={addToast}
             />
           )}
@@ -355,7 +409,7 @@ export default function App() {
               onClearLogs={async () => {
                 await ipc.clearLogs();
                 setLogs([]);
-                addToast('info', 'Logs Cleared', 'In-memory log ring buffer emptied.');
+                addToast('info', 'Logs Cleared', 'In-memory ring buffer flushed.');
               }}
               onNotify={addToast}
             />
@@ -365,32 +419,30 @@ export default function App() {
             <SettingsView
               settings={settings}
               language={language}
-              onSaveSettings={async (newSettings) => {
-                await ipc.saveSettings(newSettings);
-                setSettings(newSettings);
-                if (newSettings.language !== language) {
-                  setLanguage(newSettings.language);
-                }
+              onSaveSettings={async (updated) => {
+                setSettings(updated);
+                setLanguage(updated.language);
+                await ipc.saveSettings(updated);
+                addToast('success', 'Settings Saved', 'Configuration saved persistently to disk.');
               }}
-              onToggleLanguage={handleToggleLanguage}
               onNotify={addToast}
             />
           )}
         </main>
       </div>
 
-      {/* Global Modals */}
+      {/* Global Modals & Overlays */}
       <CommandPalette
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        devices={devices}
         selectedDevice={selectedDevice}
+        onSelectDevice={setSelectedDevice}
+        onNavigateTab={setActiveTab}
         language={language}
-        onToggleLanguage={handleToggleLanguage}
-        onRestartAdb={handleRestartAdb}
         onTakeScreenshot={handleTakeScreenshot}
-        onRebootDevice={() => handleRebootDevice()}
+        onRebootDevice={handleRebootDevice}
+        onRestartAdb={handleRestartAdb}
       />
 
       <WirelessConnectModal
@@ -401,23 +453,23 @@ export default function App() {
         language={language}
       />
 
-      {/* Reboot confirmation modal */}
+      {/* Confirm Dialog for Destructive Reboots */}
       <ConfirmDialog
         isOpen={!!pendingReboot}
         title="Confirm Device Reboot"
-        message={`Are you sure you want to reboot device ${pendingReboot?.serial}? Any unsaved work on the phone may be lost.`}
+        message={`Are you sure you want to reboot device ${pendingReboot?.serial}? Any unsaved work or running background operations will be interrupted.`}
         confirmLabel="Reboot Now"
         isDestructive={true}
-        onCancel={() => setPendingReboot(null)}
         onConfirm={() => {
           if (pendingReboot) {
             executeReboot(pendingReboot.serial, pendingReboot.mode);
             setPendingReboot(null);
           }
         }}
+        onCancel={() => setPendingReboot(null)}
       />
 
-      {/* Toast Notification Stream */}
+      {/* Toast Notification Container */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

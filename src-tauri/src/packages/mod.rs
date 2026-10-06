@@ -1,6 +1,9 @@
-use crate::adb::AdbClient;
+use crate::adb::{validate_identifier, AdbClient};
 use crate::errors::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppPackage {
@@ -17,15 +20,22 @@ pub struct AppPackage {
 }
 
 pub struct PackageManager {
-    adb: AdbClient,
+    adb: Arc<AdbClient>,
 }
 
 impl PackageManager {
-    pub fn new(adb: AdbClient) -> Self {
+    pub fn new(adb: Arc<AdbClient>) -> Self {
         Self { adb }
     }
 
     pub async fn list_packages(&self, serial: &str, filter: &str) -> AppResult<Vec<AppPackage>> {
+        // Query disabled packages first to accurately determine enabled status
+        let disabled_raw = self.adb.run_shell(serial, "pm list packages -d").await.unwrap_or_default();
+        let disabled_set: HashSet<String> = disabled_raw
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("package:").map(|p| p.trim().to_string()))
+            .collect();
+
         // filter: "all", "user" (-3), "system" (-s), "disabled" (-d)
         let arg = match filter {
             "user" => "-3 -f",
@@ -37,32 +47,61 @@ impl PackageManager {
         let cmd = format!("pm list packages {}", arg);
         let output = self.adb.run_shell(serial, &cmd).await?;
 
-        Ok(parse_pm_list_output(&output))
+        Ok(parse_pm_list_output(&output, &disabled_set))
     }
 
     pub async fn install_apk(&self, serial: &str, apk_path: &str, reinstall: bool) -> AppResult<String> {
+        let trimmed_path = apk_path.trim();
+        if trimmed_path.is_empty() {
+            return Err(AppError::Validation("APK file path cannot be empty".to_string()));
+        }
+
+        let path = Path::new(trimmed_path);
+        if !path.exists() {
+            return Err(AppError::Package(format!("File does not exist: '{}'", trimmed_path)));
+        }
+
+        let extension = path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if extension == "apks" || extension == "xapk" {
+            return Err(AppError::Package(format!(
+                "Split-APK bundles (.{ext}) cannot be installed via direct ADB install. ApexDroid supports standard standalone .apk packages.",
+                ext = extension
+            )));
+        }
+
+        if extension != "apk" {
+            return Err(AppError::Package(format!("Invalid package file extension '.{}'. Expected a standard '.apk' file.", extension)));
+        }
+
         let bin = self.adb.get_adb_binary();
         let mut cmd = tokio::process::Command::new(&bin);
         cmd.args(["-s", serial, "install"]);
         if reinstall {
             cmd.arg("-r");
         }
-        cmd.arg(apk_path);
+        cmd.arg(trimmed_path);
 
         let output = cmd.output().await
             .map_err(|e| AppError::Package(format!("Failed to execute adb install: {}", e)))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        if !stdout.contains("Success") {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            return Err(AppError::Package(format!("APK installation failed: {} {}", stdout, stderr)));
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let combined = format!("{} {}", stdout, stderr);
+
+        if !output.status.success() || !stdout.contains("Success") || combined.contains("Failure [") {
+            return Err(AppError::Package(format!("APK installation failed: {}", combined.trim())));
         }
 
         Ok("Installation Success".to_string())
     }
 
     pub async fn uninstall_package(&self, serial: &str, package_name: &str, keep_data: bool) -> AppResult<()> {
-        let mut cmd = format!("pm uninstall ");
+        validate_identifier(package_name)?;
+        let mut cmd = "pm uninstall ".to_string();
         if keep_data {
             cmd.push_str("-k ");
         }
@@ -70,41 +109,51 @@ impl PackageManager {
 
         let out = self.adb.run_shell(serial, &cmd).await?;
         if !out.contains("Success") {
-            return Err(AppError::Package(format!("Uninstall failed: {}", out)));
+            return Err(AppError::Package(format!("Uninstall failed: {}", out.trim())));
         }
         Ok(())
     }
 
     pub async fn force_stop(&self, serial: &str, package_name: &str) -> AppResult<()> {
+        validate_identifier(package_name)?;
         let cmd = format!("am force-stop {}", package_name);
         self.adb.run_shell(serial, &cmd).await?;
         Ok(())
     }
 
     pub async fn clear_data(&self, serial: &str, package_name: &str) -> AppResult<()> {
+        validate_identifier(package_name)?;
         let cmd = format!("pm clear {}", package_name);
         let out = self.adb.run_shell(serial, &cmd).await?;
         if !out.contains("Success") {
-            return Err(AppError::Package(format!("Clear data failed: {}", out)));
+            return Err(AppError::Package(format!("Clear data failed: {}", out.trim())));
         }
         Ok(())
     }
 
     pub async fn set_enabled(&self, serial: &str, package_name: &str, enabled: bool) -> AppResult<()> {
+        validate_identifier(package_name)?;
         let action = if enabled { "enable" } else { "disable-user --user 0" };
         let cmd = format!("pm {} {}", action, package_name);
-        self.adb.run_shell(serial, &cmd).await?;
+        let out = self.adb.run_shell(serial, &cmd).await?;
+        if out.contains("Error") || out.contains("Exception") {
+            return Err(AppError::Package(format!("Set enabled status failed: {}", out.trim())));
+        }
         Ok(())
     }
 
     pub async fn launch_app(&self, serial: &str, package_name: &str) -> AppResult<()> {
+        validate_identifier(package_name)?;
         let cmd = format!("monkey -p {} -c android.intent.category.LAUNCHER 1", package_name);
-        self.adb.run_shell(serial, &cmd).await?;
+        let out = self.adb.run_shell(serial, &cmd).await?;
+        if out.contains("No activities found") {
+            return Err(AppError::Package(format!("Cannot launch {}: No default launcher activity found", package_name)));
+        }
         Ok(())
     }
 }
 
-pub fn parse_pm_list_output(output: &str) -> Vec<AppPackage> {
+pub fn parse_pm_list_output(output: &str, disabled_set: &HashSet<String>) -> Vec<AppPackage> {
     let mut packages = Vec::new();
 
     for line in output.lines() {
@@ -114,6 +163,7 @@ pub fn parse_pm_list_output(output: &str) -> Vec<AppPackage> {
             if let Some((apk_path, pkg_name)) = rest.rsplit_once('=') {
                 let package_name = pkg_name.trim().to_string();
                 let is_system = apk_path.starts_with("/system") || apk_path.starts_with("/product") || apk_path.starts_with("/apex");
+                let is_enabled = !disabled_set.contains(&package_name);
 
                 // Infer clean human display name from package reverse domain
                 let display_name = package_name.rsplit('.').next().unwrap_or(&package_name)
@@ -133,7 +183,7 @@ pub fn parse_pm_list_output(output: &str) -> Vec<AppPackage> {
                     display_name,
                     apk_path: apk_path.to_string(),
                     is_system,
-                    is_enabled: true,
+                    is_enabled,
                     version_name: None,
                     version_code: None,
                     install_time: None,
@@ -153,13 +203,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_pm_list() {
-        let sample = "package:/data/app/~~abc/com.google.android.youtube-xyz/base.apk=com.google.android.youtube\npackage:/system/app/Calculator/Calculator.apk=com.android.calculator2";
-        let parsed = parse_pm_list_output(sample);
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].package_name, "com.android.calculator2");
-        assert_eq!(parsed[0].is_system, true);
-        assert_eq!(parsed[1].package_name, "com.google.android.youtube");
-        assert_eq!(parsed[1].is_system, false);
+    fn test_parse_pm_list_with_disabled() {
+        let sample = "package:/data/app/~~abc/base.apk=com.example.normal\npackage:/system/app/SysApp.apk=com.android.sys\npackage:/data/app/~~def/base.apk=com.example.frozen\n";
+        let mut disabled = HashSet::new();
+        disabled.insert("com.example.frozen".to_string());
+
+        let pkgs = parse_pm_list_output(sample, &disabled);
+        assert_eq!(pkgs.len(), 3);
+
+        let frozen = pkgs.iter().find(|p| p.package_name == "com.example.frozen").unwrap();
+        assert_eq!(frozen.is_enabled, false);
+
+        let normal = pkgs.iter().find(|p| p.package_name == "com.example.normal").unwrap();
+        assert_eq!(normal.is_enabled, true);
+        assert_eq!(normal.is_system, false);
+
+        let sys = pkgs.iter().find(|p| p.package_name == "com.android.sys").unwrap();
+        assert_eq!(sys.is_system, true);
+        assert_eq!(sys.is_enabled, true);
     }
 }

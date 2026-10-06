@@ -23,12 +23,14 @@ interface DashboardViewProps {
   devices: DeviceDetails[];
   selectedDevice: DeviceDetails | null;
   onSelectDevice: (device: DeviceDetails) => void;
-  setActiveTab: (tab: ActiveTab) => void;
+  setActiveTab?: (tab: ActiveTab) => void;
+  onNavigateTab?: (tab: ActiveTab) => void;
   language: Language;
   onTakeScreenshot: () => void;
   onRebootDevice: () => void;
   onRestartAdb: () => void;
-  logs: LogMessage[];
+  onRefreshDevices?: () => void;
+  logs?: LogMessage[];
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -36,12 +38,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   selectedDevice,
   onSelectDevice,
   setActiveTab,
+  onNavigateTab,
   language,
   onTakeScreenshot,
   onRebootDevice,
   onRestartAdb,
-  logs,
+  onRefreshDevices,
+  logs = [],
 }) => {
+  const navigate = onNavigateTab || setActiveTab || (() => {});
   const t = translations[language];
 
   const formatBytes = (bytes: number) => {
@@ -54,6 +59,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const usbCount = devices.filter((d) => !d.is_wireless).length;
   const wifiCount = devices.filter((d) => d.is_wireless).length;
+
+  const osDistribution = React.useMemo(() => {
+    if (devices.length === 0) return [];
+    const map: Record<string, number> = {};
+    for (const d of devices) {
+      const ver = d.software?.android_version ? `Android ${d.software.android_version}` : 'Unknown OS';
+      map[ver] = (map[ver] || 0) + 1;
+    }
+    const colors = ['bg-cyan-500', 'bg-indigo-500', 'bg-emerald-500', 'bg-amber-500', 'bg-violet-500'];
+    return Object.entries(map).map(([version, count], idx) => ({
+      version,
+      count,
+      percent: Math.round((count / devices.length) * 100),
+      color: colors[idx % colors.length],
+    }));
+  }, [devices]);
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto overflow-y-auto">
@@ -150,17 +171,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div className="mt-3">
             <div className="text-base font-bold text-white truncate">
-              {selectedDevice?.hardware?.soc_model || 'ARM64 Octa-Core'}
+              {selectedDevice?.hardware?.soc_model || (selectedDevice ? 'SoC Unknown' : 'N/A')}
             </div>
             <div className="text-[11px] text-neutral-500 mt-1 flex items-center gap-1.5 truncate">
               <span className="text-indigo-300 font-mono text-[10px]">
-                {selectedDevice?.hardware?.cpu_architecture || 'arm64-v8a'}
+                {selectedDevice?.hardware?.cpu_architecture || (selectedDevice ? 'Arch Unknown' : 'N/A')}
               </span>
               <span>·</span>
               <span className="text-neutral-400 tabular-nums">
                 {selectedDevice?.hardware?.ram_total_mb
-                  ? `${(selectedDevice.hardware.ram_total_mb / 1024).toFixed(0)} GB RAM`
-                  : '12 GB RAM'}
+                  ? `${(selectedDevice.hardware.ram_total_mb / 1024).toFixed(1)} GB RAM`
+                  : (selectedDevice ? 'RAM Info N/A' : 'N/A')}
               </span>
             </div>
           </div>
@@ -239,7 +260,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 {t.deviceList}
               </h2>
               <button
-                onClick={() => setActiveTab('devices')}
+                onClick={() => navigate('devices')}
                 className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 transition-colors"
               >
                 <span>View Full Fleet</span>
@@ -304,7 +325,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <div className="text-neutral-200 tabular-nums">
                           {dev.display ? `${dev.display.width}x${dev.display.height}` : 'N/A'}
                         </div>
-                        <div className="text-[10px] text-neutral-400">120Hz Display</div>
+                        <div className="text-[10px] text-neutral-400">
+                          {dev.display?.refresh_rate ? `${dev.display.refresh_rate.toFixed(0)}Hz` : dev.display?.density_dpi ? `${dev.display.density_dpi} dpi` : 'Display'}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -317,20 +340,34 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="mt-6 pt-4 border-t border-neutral-800/80">
             <div className="flex items-center justify-between text-xs text-neutral-400 mb-2">
               <span>{t.androidDistribution}</span>
-              <span className="font-mono text-[11px] text-neutral-400">100% Android 14+</span>
-            </div>
-            <div className="h-2 w-full rounded-full bg-neutral-800 overflow-hidden flex">
-              <div className="bg-cyan-500 h-full w-1/2" title="Android 14 (50%)" />
-              <div className="bg-indigo-500 h-full w-1/2" title="Android 15 (50%)" />
-            </div>
-            <div className="flex items-center gap-4 text-[11px] text-neutral-400 mt-2">
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-cyan-500" /> Android 14.0 (Samsung OneUI 6.1)
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-indigo-500" /> Android 15.0 Beta 2 (Pixel Titan)
+              <span className="font-mono text-[11px] text-neutral-400">
+                {devices.length === 0 ? 'No active devices' : `${devices.length} verified unit${devices.length > 1 ? 's' : ''}`}
               </span>
             </div>
+            {osDistribution.length === 0 ? (
+              <div className="text-[11px] text-neutral-500 py-1">Connect devices to inspect Android version distribution.</div>
+            ) : (
+              <>
+                <div className="h-2 w-full rounded-full bg-neutral-800 overflow-hidden flex">
+                  {osDistribution.map((item) => (
+                    <div
+                      key={item.version}
+                      className={`${item.color} h-full`}
+                      style={{ width: `${item.percent}%` }}
+                      title={`${item.version} (${item.percent}%)`}
+                    />
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center gap-4 text-[11px] text-neutral-400 mt-2">
+                  {osDistribution.map((item) => (
+                    <span key={item.version} className="flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${item.color}`} />
+                      {item.version} ({item.count} unit{item.count > 1 ? 's' : ''} - {item.percent}%)
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -341,7 +378,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               {t.recentActivity}
             </h2>
             <button
-              onClick={() => setActiveTab('logs')}
+              onClick={() => navigate('logs')}
               className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 transition-colors"
             >
               <span>{t.logs}</span>

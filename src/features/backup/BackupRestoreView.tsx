@@ -23,19 +23,21 @@ import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 interface BackupRestoreViewProps {
   selectedDevice: DeviceDetails | null;
   language: Language;
+  defaultPath: string;
   onNotify: (type: 'info' | 'success' | 'warning' | 'error', title: string, msg: string) => void;
 }
 
 export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({
   selectedDevice,
   language,
+  defaultPath,
   onNotify,
 }) => {
   const [activeMode, setActiveMode] = useState<'backup' | 'restore'>('backup');
   const [includeApps, setIncludeApps] = useState(true);
   const [includeMedia, setIncludeMedia] = useState(true);
-  const [destPath, setDestPath] = useState('C:\\ApexDroid_Backups');
-  const [restoreDir, setRestoreDir] = useState('C:\\ApexDroid_Backups');
+  const [destPath, setDestPath] = useState(defaultPath || 'C:\\ApexDroid\\Backups');
+  const [restoreDir, setRestoreDir] = useState(defaultPath || 'C:\\ApexDroid\\Backups');
 
   // Package selection from real device
   const [devicePackages, setDevicePackages] = useState<string[]>([]);
@@ -71,25 +73,15 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({
   }, [selectedDevice?.serial]);
 
   const handleBrowseDirectory = async (forRestore: boolean = false) => {
-    try {
-      if (ipc.isNativeMode()) {
-        const { open } = await import('@tauri-apps/plugin-dialog');
-        const selected = await open({
-          directory: true,
-          multiple: false,
-          title: forRestore ? 'Select Backup Directory' : 'Select Destination Directory',
-        });
-        if (selected && typeof selected === 'string') {
-          if (forRestore) {
-            setRestoreDir(selected);
-          } else {
-            setDestPath(selected);
-          }
-        }
+    const selected = await ipc.pickDirectory(
+      forRestore ? 'Select Backup Directory with backup_manifest.json' : 'Select Destination Backup Directory'
+    );
+    if (selected) {
+      if (forRestore) {
+        setRestoreDir(selected);
+      } else {
+        setDestPath(selected);
       }
-    } catch (e) {
-      // If plugin-dialog is not initialized, let user manually edit path
-      onNotify('info', 'Folder Path', 'You can type the exact target folder path directly into the input.');
     }
   };
 
@@ -102,10 +94,10 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({
 
     const plan: BackupPlan = {
       serial: selectedDevice.serial,
-      destination_dir: destPath.trim() || 'C:\\ApexDroid_Backups',
+      destination_dir: destPath.trim() || 'C:\\ApexDroid\\Backups',
       include_apk: includeApps,
       include_shared_storage: includeMedia,
-      include_system_settings: false, // Accurately disclaimed as unprivileged
+      include_system_settings: false,
       specific_packages: includeApps ? selectedPackages : [],
     };
 
@@ -125,13 +117,12 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({
   };
 
   const handleCancelBackup = async () => {
+    if (!selectedDevice) return;
     try {
-      await ipc.cancelBackup();
-      onNotify('warning', 'Backup Cancelled', 'Cancel signal sent to backend.');
+      await ipc.cancelBackup(selectedDevice.serial);
+      onNotify('warning', 'Cancellation Requested', 'Sent abort signal to ongoing backup process.');
     } catch (err: any) {
       onNotify('error', 'Cancel Error', err.message);
-    } finally {
-      setIsBackingUp(false);
     }
   };
 
@@ -140,27 +131,21 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({
     setShowRestoreConfirm(false);
     setIsRestoring(true);
     setRestoreResult(null);
-    onNotify('info', 'Restore Started', `Reading manifest and restoring to ${selectedDevice.serial}...`);
+    onNotify('info', 'Restoring Assets', `Restoring verified items from ${restoreDir}...`);
 
     try {
       const result = await ipc.restoreBackup(selectedDevice.serial, restoreDir.trim());
       setRestoreResult(result);
       if (result.failed_items === 0) {
-        onNotify('success', 'Restore Complete', `Restored ${result.successful_items} of ${result.total_items} items.`);
+        onNotify('success', 'Restore Succeeded', `Restored ${result.successful_items} of ${result.total_items} items.`);
       } else {
-        onNotify('warning', 'Restore Completed with Warnings', `Restored ${result.successful_items} items, ${result.failed_items} failed.`);
+        onNotify('warning', 'Restore Completed with Errors', `Restored ${result.successful_items} items, but ${result.failed_items} items failed.`);
       }
     } catch (err: any) {
-      onNotify('error', 'Restore Failed', err.message || 'Failed to read manifest or restore data');
+      onNotify('error', 'Restore Failed', err.message || 'Manifest verification or transfer failed');
     } finally {
       setIsRestoring(false);
     }
-  };
-
-  const togglePackageSelection = (pkg: string) => {
-    setSelectedPackages((prev) =>
-      prev.includes(pkg) ? prev.filter((p) => p !== pkg) : [...prev, pkg]
-    );
   };
 
   if (!selectedDevice) {
@@ -173,177 +158,161 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({
   }
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto overflow-y-auto">
-      {/* Header */}
+    <div className="p-6 space-y-6 max-w-7xl mx-auto overflow-y-auto">
+      {/* Header & Mode Switcher */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-neutral-800/80 pb-5">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-white">{t.backupWizard}</h1>
+          <h1 className="text-xl font-bold tracking-tight text-white">{t.backupRestore}</h1>
           <p className="text-xs text-neutral-400 mt-1">
-            Genuine offline device backup with SHA-256 file manifest verification and APK extraction via ADB.
+            Genuine offline backup of user APKs and storage partitions with SHA-256 file manifest verification.
           </p>
         </div>
 
-        {/* Tab switch between Backup and Restore */}
-        <div className="flex rounded-lg bg-[#0a0d14] p-1 border border-neutral-800 text-xs">
+        <div className="flex items-center gap-1 bg-[#090b10] p-1 rounded-lg border border-neutral-800/80">
           <button
             onClick={() => setActiveMode('backup')}
-            className={`py-1.5 px-3 rounded-md font-medium transition-colors ${
+            className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
               activeMode === 'backup'
-                ? 'bg-neutral-800 text-white shadow-sm'
-                : 'text-neutral-400 hover:text-neutral-200'
+                ? 'bg-cyan-600 text-white shadow-sm'
+                : 'text-neutral-400 hover:text-white'
             }`}
           >
-            Create Backup
+            {t.createBackup}
           </button>
           <button
             onClick={() => setActiveMode('restore')}
-            className={`py-1.5 px-3 rounded-md font-medium transition-colors ${
+            className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
               activeMode === 'restore'
-                ? 'bg-neutral-800 text-white shadow-sm'
-                : 'text-neutral-400 hover:text-neutral-200'
+                ? 'bg-cyan-600 text-white shadow-sm'
+                : 'text-neutral-400 hover:text-white'
             }`}
           >
-            Restore Backup
+            {t.restoreBackup}
           </button>
         </div>
       </div>
 
+      {/* Mode Viewport */}
       {activeMode === 'backup' ? (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Left 2 Cols: Selection & Settings */}
-          <div className="md:col-span-2 space-y-5">
-            <div className="p-5 rounded-xl bg-[#0c1017] border border-neutral-800/80 space-y-4">
-              <h2 className="text-xs font-semibold text-neutral-300 uppercase tracking-wider">
-                {t.backupSelectItems}
-              </h2>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Left Configuration Pane */}
+          <div className="lg:col-span-2 space-y-5">
+            {/* Category Selectors */}
+            <div className="bg-[#0c1017] border border-neutral-800/80 rounded-xl p-5 space-y-4">
+              <h3 className="text-sm font-semibold text-white">1. Select Backup Partitions</h3>
 
-              <div className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* Apps Category */}
-                <div className="p-3.5 rounded-lg bg-[#0f1422] border border-neutral-800 space-y-2">
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-                        <Boxes className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="text-xs font-medium text-white">{t.backupApps}</div>
-                        <div className="text-[11px] text-neutral-400">
-                          Pulls real base.apk packages using <code className="text-cyan-400 font-mono">pm path</code>
-                        </div>
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={includeApps}
-                      disabled={isBackingUp}
-                      onChange={(e) => setIncludeApps(e.target.checked)}
-                      className="accent-cyan-500"
-                    />
-                  </label>
-
-                  {/* Package Selector when Apps is checked */}
-                  {includeApps && (
-                    <div className="pt-2 border-t border-neutral-800/60">
-                      <div className="flex items-center justify-between text-[11px] text-neutral-400 mb-1.5">
-                        <span>Select User Packages ({selectedPackages.length} / {devicePackages.length} selected):</span>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedPackages([...devicePackages])}
-                            className="text-cyan-400 hover:underline text-[10px]"
-                          >
-                            All
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedPackages([])}
-                            className="text-neutral-400 hover:underline text-[10px]"
-                          >
-                            None
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="max-h-36 overflow-y-auto space-y-1 pr-1 font-mono text-[11px]">
-                        {isLoadingPackages ? (
-                          <div className="text-neutral-500 py-2">Loading user packages from device...</div>
-                        ) : devicePackages.length === 0 ? (
-                          <div className="text-neutral-500 py-1">No user applications found.</div>
-                        ) : (
-                          devicePackages.map((pkg) => (
-                            <label
-                              key={pkg}
-                              className="flex items-center justify-between p-1.5 rounded bg-[#090b10] border border-neutral-800/60 hover:bg-[#121726] cursor-pointer"
-                            >
-                              <span className="truncate max-w-sm text-neutral-300">{pkg}</span>
-                              <input
-                                type="checkbox"
-                                checked={selectedPackages.includes(pkg)}
-                                onChange={() => togglePackageSelection(pkg)}
-                                className="accent-cyan-500 ml-2"
-                              />
-                            </label>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Shared Storage Media */}
-                <label className="flex items-center justify-between p-3.5 rounded-lg bg-[#0f1422] border border-neutral-800 hover:border-neutral-700 cursor-pointer transition-colors">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                      <FolderTree className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-medium text-white">{t.backupMedia}</div>
-                      <div className="text-[11px] text-neutral-400">
-                        Pulls accessible files from <code className="font-mono text-indigo-300">/sdcard/Documents</code> and <code className="font-mono text-indigo-300">/sdcard/Download</code>
-                      </div>
+                <label
+                  className={`p-3.5 rounded-xl border flex items-start gap-3 cursor-pointer transition-colors ${
+                    includeApps
+                      ? 'bg-cyan-950/20 border-cyan-500/40 text-cyan-200'
+                      : 'bg-[#090b10] border-neutral-800 text-neutral-400'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={includeApps}
+                    onChange={(e) => setIncludeApps(e.target.checked)}
+                    className="mt-0.5 rounded border-neutral-700 text-cyan-500 focus:ring-0"
+                  />
+                  <div>
+                    <div className="text-xs font-semibold text-white">{t.backupApps}</div>
+                    <div className="text-[11px] text-neutral-400 mt-0.5 leading-relaxed">
+                      Pulls standalone APKs via <code className="font-mono text-cyan-400">pm path</code>.
                     </div>
                   </div>
+                </label>
+
+                {/* Media Category */}
+                <label
+                  className={`p-3.5 rounded-xl border flex items-start gap-3 cursor-pointer transition-colors ${
+                    includeMedia
+                      ? 'bg-cyan-950/20 border-cyan-500/40 text-cyan-200'
+                      : 'bg-[#090b10] border-neutral-800 text-neutral-400'
+                  }`}
+                >
                   <input
                     type="checkbox"
                     checked={includeMedia}
-                    disabled={isBackingUp}
                     onChange={(e) => setIncludeMedia(e.target.checked)}
-                    className="accent-cyan-500"
+                    className="mt-0.5 rounded border-neutral-700 text-cyan-500 focus:ring-0"
                   />
-                </label>
-
-                {/* System Limitations Disclaimer */}
-                <div className="p-3 rounded-lg bg-neutral-900/60 border border-neutral-800 text-[11px] text-neutral-400 space-y-1">
-                  <div className="flex items-center gap-1.5 text-neutral-300 font-semibold">
-                    <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Android Security & Permission Invariants</span>
+                  <div>
+                    <div className="text-xs font-semibold text-white">{t.backupMedia}</div>
+                    <div className="text-[11px] text-neutral-400 mt-0.5 leading-relaxed">
+                      Pulls shared user storage (/sdcard/Documents, Download).
+                    </div>
                   </div>
-                  <p className="leading-relaxed">
-                    Unprivileged ADB access cannot extract private app sandboxes (<code className="font-mono text-neutral-300">/data/data/</code>) or system Wi-Fi credentials without device root access or Android Backup Agent manifest approval.
-                  </p>
-                </div>
+                </label>
               </div>
+
+              {/* Package Selection Drawer if Apps enabled */}
+              {includeApps && (
+                <div className="pt-2 border-t border-neutral-800/80">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs text-neutral-300 font-medium">
+                      Packages to Extract ({selectedPackages.length} of {devicePackages.length} selected):
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedPackages.length === devicePackages.length) {
+                          setSelectedPackages([]);
+                        } else {
+                          setSelectedPackages([...devicePackages]);
+                        }
+                      }}
+                      className="text-[11px] text-cyan-400 hover:underline"
+                    >
+                      {selectedPackages.length === devicePackages.length ? 'Deselect All' : 'Select All'}
+                    </button>
+                  </div>
+                  <div className="max-h-40 overflow-y-auto bg-[#090b10] border border-neutral-800 rounded-lg p-2 divide-y divide-neutral-900/60">
+                    {isLoadingPackages ? (
+                      <div className="p-4 text-center text-xs text-neutral-500 flex items-center justify-center gap-2">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-500" />
+                        <span>Querying installed packages...</span>
+                      </div>
+                    ) : devicePackages.length === 0 ? (
+                      <div className="p-4 text-center text-xs text-neutral-500">No user packages found</div>
+                    ) : (
+                      devicePackages.map((pkg) => (
+                        <label key={pkg} className="flex items-center gap-2 py-1 px-1.5 cursor-pointer text-xs text-neutral-300 hover:text-white">
+                          <input
+                            type="checkbox"
+                            checked={selectedPackages.includes(pkg)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedPackages((prev) => [...prev, pkg]);
+                              } else {
+                                setSelectedPackages((prev) => prev.filter((p) => p !== pkg));
+                              }
+                            }}
+                            className="rounded border-neutral-800 text-cyan-500 focus:ring-0"
+                          />
+                          <span className="font-mono text-[11px] truncate">{pkg}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Destination Directory */}
-            <div className="p-5 rounded-xl bg-[#0c1017] border border-neutral-800/80 space-y-2">
-              <label className="block text-xs font-semibold text-neutral-300 uppercase tracking-wider">
-                {t.destinationFolder}
-              </label>
-              <div className="flex gap-2">
+            {/* Target Path Configuration */}
+            <div className="bg-[#0c1017] border border-neutral-800/80 rounded-xl p-5 space-y-3">
+              <h3 className="text-sm font-semibold text-white">2. Local Destination Directory</h3>
+              <div className="flex items-center gap-2">
                 <input
                   type="text"
                   value={destPath}
-                  disabled={isBackingUp}
                   onChange={(e) => setDestPath(e.target.value)}
-                  placeholder="C:\ApexDroid_Backups"
-                  className="flex-1 bg-[#0a0d14] border border-neutral-800 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-cyan-500"
+                  className="flex-1 bg-[#090b10] border border-neutral-800 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-cyan-500"
                 />
                 <button
-                  type="button"
                   onClick={() => handleBrowseDirectory(false)}
-                  disabled={isBackingUp}
-                  className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 flex items-center gap-1.5"
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#0e1422] border border-neutral-800 hover:border-cyan-500/40 text-xs font-medium text-neutral-200 hover:text-white"
                 >
                   <FolderOpen className="w-3.5 h-3.5" />
                   <span>Browse</span>
@@ -351,166 +320,145 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({
               </div>
             </div>
 
-            {/* Verified Manifest Result */}
+            {/* Start Action */}
+            <div className="flex items-center justify-between pt-2">
+              <div className="text-[11px] text-neutral-500">
+                Verified SHA-256 manifest will be generated in destination directory.
+              </div>
+              <div className="flex items-center gap-2">
+                {isBackingUp ? (
+                  <button
+                    onClick={handleCancelBackup}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white shadow-sm"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Cancel Backup</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStartBackup}
+                    className="flex items-center gap-2 px-5 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-xs font-semibold text-white shadow-sm shadow-cyan-950"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    <span>Start Backup</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Right Status & Results Panel */}
+          <div className="space-y-5">
+            <div className="bg-[#0c1017] border border-neutral-800/80 rounded-xl p-5">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-neutral-400 mb-3">
+                Security & Platform Boundaries
+              </h3>
+              <div className="p-3 rounded-lg bg-amber-950/20 border border-amber-500/30 text-amber-300 text-xs leading-relaxed space-y-2">
+                <div className="flex items-center gap-1.5 font-semibold">
+                  <ShieldAlert className="w-4 h-4 shrink-0 text-amber-400" />
+                  <span>Android Sandbox Invariant</span>
+                </div>
+                <p className="text-[11px] text-amber-200/80">
+                  Private application sandbox data (<code className="font-mono">/data/data/&lt;pkg&gt;</code>) is protected by SELinux. Extracting private SQLite databases and encrypted credentials without root access or a custom Android Backup Agent is restricted by design.
+                </p>
+              </div>
+            </div>
+
             {backupManifest && (
-              <div className="p-4 rounded-xl bg-[#0d1624] border border-cyan-500/40 text-xs space-y-2 animate-in fade-in">
-                <div className="flex items-center justify-between text-cyan-300 font-semibold">
-                  <span className="flex items-center gap-1.5">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    Verified Backup Manifest Generated
-                  </span>
-                  <span className="font-mono text-[11px] text-neutral-400">{backupManifest.timestamp_iso.substring(0, 19)}</span>
+              <div className="bg-[#0c1017] border border-cyan-500/30 rounded-xl p-5 space-y-3">
+                <div className="flex items-center gap-2 text-cyan-400">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <h4 className="text-xs font-bold uppercase tracking-wider">Manifest Verified</h4>
                 </div>
-                <div className="text-[11px] text-neutral-300 space-y-1 font-mono">
-                  <div>Total Files: {backupManifest.total_files}</div>
-                  <div>Total Transferred: {(backupManifest.total_bytes / (1024 * 1024)).toFixed(2)} MB</div>
-                  <div>Target Serial: {backupManifest.device_serial}</div>
-                </div>
-                <div className="pt-2 text-[10px] text-neutral-400 border-t border-neutral-800">
-                  Integrity Verified: All files hashed with SHA-256 and cataloged in <code className="text-cyan-300">backup_manifest.json</code>.
+                <div className="space-y-1.5 text-xs text-neutral-300 font-mono text-[11px]">
+                  <div className="flex justify-between">
+                    <span className="text-neutral-500">Device:</span>
+                    <span>{backupManifest.device_serial}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-neutral-500">Files:</span>
+                    <span>{backupManifest.total_files}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-neutral-500">Size:</span>
+                    <span>{(backupManifest.total_bytes / (1024 * 1024)).toFixed(1)} MB</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-neutral-500">Format:</span>
+                    <span>v{backupManifest.format_version}</span>
+                  </div>
                 </div>
               </div>
             )}
           </div>
-
-          {/* Right Col: Action & Controls */}
-          <div className="p-5 rounded-xl bg-[#0c1017] border border-neutral-800/80 flex flex-col justify-between h-fit space-y-5">
-            <div className="space-y-4">
-              <h2 className="text-xs font-semibold text-neutral-300 uppercase tracking-wider">
-                Operation Scope
-              </h2>
-
-              <div className="space-y-2 text-xs">
-                <div className="flex justify-between py-1 border-b border-neutral-800">
-                  <span className="text-neutral-400">Target Device</span>
-                  <span className="text-white font-medium truncate max-w-[130px]">{selectedDevice.name}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-neutral-800">
-                  <span className="text-neutral-400">Serial</span>
-                  <span className="text-white font-mono text-[11px]">{selectedDevice.serial}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-neutral-800">
-                  <span className="text-neutral-400">Selected APKs</span>
-                  <span className="text-cyan-400 font-mono font-bold">
-                    {includeApps ? selectedPackages.length : 0}
-                  </span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-neutral-800">
-                  <span className="text-neutral-400">Integrity Check</span>
-                  <span className="text-white font-mono text-[11px]">SHA-256 Digest</span>
-                </div>
-                <div className="flex justify-between py-1">
-                  <span className="text-neutral-400">Storage Scope</span>
-                  <span className="text-white">User-Accessible</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <button
-                onClick={handleStartBackup}
-                disabled={isBackingUp || (!includeApps && !includeMedia)}
-                className="w-full py-2.5 px-4 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-xs shadow-sm shadow-cyan-950 transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
-              >
-                {isBackingUp ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                <span>{isBackingUp ? 'Backing Up...' : t.startBackup}</span>
-              </button>
-
-              {isBackingUp && (
-                <button
-                  onClick={handleCancelBackup}
-                  className="w-full py-1.5 px-3 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-rose-300 text-xs transition-colors"
-                >
-                  Cancel Backup
-                </button>
-              )}
-            </div>
-          </div>
         </div>
       ) : (
-        /* Restore Flow */
-        <div className="space-y-5 max-w-2xl">
-          <div className="p-5 rounded-xl bg-[#0c1017] border border-neutral-800/80 space-y-4">
-            <h2 className="text-xs font-semibold text-neutral-300 uppercase tracking-wider">
-              Restore from Backup Manifest
-            </h2>
+        /* Restore View */
+        <div className="bg-[#0c1017] border border-neutral-800/80 rounded-xl p-6 space-y-6 max-w-2xl">
+          <div>
+            <h3 className="text-sm font-semibold text-white mb-1">Select Backup Directory to Restore</h3>
+            <p className="text-xs text-neutral-400">
+              Point to a folder containing a valid <code className="text-cyan-400 font-mono">backup_manifest.json</code>. Hashes will be validated before pushing files.
+            </p>
+          </div>
 
-            <div className="space-y-2 text-xs">
-              <label className="block text-neutral-400">Select Backup Folder (containing backup_manifest.json):</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={restoreDir}
-                  disabled={isRestoring}
-                  onChange={(e) => setRestoreDir(e.target.value)}
-                  placeholder="C:\ApexDroid_Backups"
-                  className="flex-1 bg-[#0a0d14] border border-neutral-800 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-cyan-500"
-                />
-                <button
-                  type="button"
-                  onClick={() => handleBrowseDirectory(true)}
-                  disabled={isRestoring}
-                  className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 flex items-center gap-1.5"
-                >
-                  <FolderOpen className="w-3.5 h-3.5" />
-                  <span>Browse</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="p-3.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 space-y-1">
-              <div className="font-semibold flex items-center gap-1.5">
-                <AlertTriangle className="w-4 h-4 text-amber-400" />
-                <span>Restoration Confirmation Note</span>
-              </div>
-              <p className="text-[11px] text-amber-200 leading-relaxed">
-                Restoring will reinstall APKs (<code className="font-mono">pm install -r</code>) and push media files back to <code className="font-mono">/sdcard/Download</code> on target device <strong className="text-white font-mono">{selectedDevice.serial}</strong>.
-              </p>
-            </div>
-
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={restoreDir}
+              onChange={(e) => setRestoreDir(e.target.value)}
+              className="flex-1 bg-[#090b10] border border-neutral-800 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-cyan-500"
+            />
             <button
-              onClick={() => setShowRestoreConfirm(true)}
-              disabled={isRestoring || !restoreDir.trim()}
-              className="px-5 py-2.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-xs shadow-sm transition-colors disabled:opacity-40 flex items-center gap-2"
+              onClick={() => handleBrowseDirectory(true)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#0e1422] border border-neutral-800 hover:border-cyan-500/40 text-xs font-medium text-neutral-200 hover:text-white"
             >
-              {isRestoring ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
-              <span>{isRestoring ? 'Restoring Files...' : 'Start Restore Process'}</span>
+              <FolderOpen className="w-3.5 h-3.5" />
+              <span>Browse</span>
             </button>
           </div>
 
-          {/* Restore Results Summary */}
+          <button
+            onClick={() => setShowRestoreConfirm(true)}
+            disabled={isRestoring}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-xs font-semibold text-white shadow-sm disabled:opacity-50"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${isRestoring ? 'animate-spin' : ''}`} />
+            <span>{isRestoring ? 'Restoring...' : 'Validate and Restore'}</span>
+          </button>
+
           {restoreResult && (
-            <div className="p-4 rounded-xl bg-[#0d1624] border border-cyan-500/40 text-xs space-y-2 animate-in fade-in">
-              <h3 className="text-white font-semibold flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                <span>Restore Execution Summary</span>
-              </h3>
-              <div className="text-[11px] font-mono text-neutral-300 space-y-1">
-                <div>Total Items in Manifest: {restoreResult.total_items}</div>
-                <div>Successfully Restored: {restoreResult.successful_items}</div>
-                <div>Failed: {restoreResult.failed_items}</div>
+            <div className="p-4 rounded-xl bg-[#090b10] border border-neutral-800 space-y-2">
+              <h4 className="text-xs font-bold text-white flex items-center justify-between">
+                <span>Restore Summary:</span>
+                <span className="font-mono text-cyan-400">
+                  {restoreResult.successful_items} / {restoreResult.total_items} Succeeded
+                </span>
+              </h4>
+              <div className="max-h-48 overflow-y-auto space-y-1 text-[11px] font-mono">
+                {restoreResult.details.map((detail, idx) => (
+                  <div
+                    key={idx}
+                    className={detail.includes('Failed') ? 'text-rose-400' : 'text-emerald-400'}
+                  >
+                    {detail}
+                  </div>
+                ))}
               </div>
-              {restoreResult.details.length > 0 && (
-                <div className="pt-2 max-h-32 overflow-y-auto space-y-1 text-[10px] font-mono text-neutral-400">
-                  {restoreResult.details.map((d, i) => (
-                    <div key={i}>{d}</div>
-                  ))}
-                </div>
-              )}
             </div>
           )}
         </div>
       )}
 
-      {/* Confirmation Dialog for Restore */}
+      {/* Confirm Restore Dialog */}
       <ConfirmDialog
         isOpen={showRestoreConfirm}
-        title="Confirm Device Restoration"
-        message={`This will reinstall APKs and push media from "${restoreDir}" onto device ${selectedDevice.name} (${selectedDevice.serial}). Proceed?`}
+        title="Confirm Backup Restore"
+        message={`Are you sure you want to restore backed up assets from "${restoreDir}" to device ${selectedDevice.serial}? This will reinstall APKs and restore media files.`}
         confirmLabel="Proceed with Restore"
         isDestructive={false}
-        onCancel={() => setShowRestoreConfirm(false)}
         onConfirm={handleExecuteRestore}
+        onCancel={() => setShowRestoreConfirm(false)}
       />
     </div>
   );

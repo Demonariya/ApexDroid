@@ -1,4 +1,4 @@
-use crate::adb::{AdbVersion, DeviceConnectionStatus, RawAdbDevice};
+use crate::adb::{AdbVersion, RawAdbDevice};
 use crate::devices::DeviceDetails;
 use crate::errors::AppError;
 use crate::filesystem::FileEntry;
@@ -108,6 +108,28 @@ pub async fn rename_file(
 }
 
 #[tauri::command]
+pub async fn pull_file(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+    remote_path: String,
+    local_path: String,
+) -> Result<u64, String> {
+    state.logs.push("INFO", "fs", &format!("Pulling {} -> {}", remote_path, local_path), Some(&serial));
+    state.filesystem_manager.pull_file(&serial, &remote_path, &local_path).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn push_file(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+    local_path: String,
+    remote_path: String,
+) -> Result<u64, String> {
+    state.logs.push("INFO", "fs", &format!("Pushing {} -> {}", local_path, remote_path), Some(&serial));
+    state.filesystem_manager.push_file(&serial, &local_path, &remote_path).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn list_packages(
     state: State<'_, Arc<AppState>>,
     serial: String,
@@ -194,6 +216,22 @@ pub async fn stop_scrcpy(
 }
 
 #[tauri::command]
+pub async fn is_scrcpy_running(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+) -> Result<bool, String> {
+    Ok(state.scrcpy_manager.is_mirroring(&serial).await)
+}
+
+#[tauri::command]
+pub async fn is_scrcpy_recording(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+) -> Result<bool, String> {
+    Ok(state.scrcpy_manager.is_recording(&serial).await)
+}
+
+#[tauri::command]
 pub async fn send_key_event(
     state: State<'_, Arc<AppState>>,
     serial: String,
@@ -207,17 +245,27 @@ pub async fn take_screenshot(
     state: State<'_, Arc<AppState>>,
     serial: String,
     destination_path: String,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     state.logs.push("INFO", "screenshot", &format!("Capturing screenshot for {} -> {}", serial, destination_path), Some(&serial));
     state.adb_client.take_screenshot(&serial, &destination_path).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn is_scrcpy_running(
+pub async fn get_logcat(
     state: State<'_, Arc<AppState>>,
     serial: String,
-) -> Result<bool, String> {
-    Ok(state.scrcpy_manager.is_mirroring(&serial).await)
+    max_lines: Option<u32>,
+    filter: Option<String>,
+) -> Result<Vec<String>, String> {
+    state.adb_client.get_logcat(&serial, max_lines.unwrap_or(200), filter.as_deref()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_logcat(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+) -> Result<(), String> {
+    state.adb_client.clear_logcat(&serial).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -242,8 +290,9 @@ pub async fn restore_backup(
 #[tauri::command]
 pub async fn cancel_backup(
     state: State<'_, Arc<AppState>>,
+    serial: String,
 ) -> Result<(), String> {
-    state.backup_manager.cancel();
+    state.backup_manager.cancel_backup(&serial).await;
     Ok(())
 }
 
@@ -268,6 +317,5 @@ pub async fn save_settings(
     state: State<'_, Arc<AppState>>,
     settings: AppSettings,
 ) -> Result<(), String> {
-    *state.settings.write() = settings;
-    Ok(())
+    state.save_settings(settings).map_err(|e| e.to_string())
 }

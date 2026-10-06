@@ -7,23 +7,22 @@ import {
   ToggleLeft,
   ToggleRight,
   Eraser,
-  Download,
   Upload,
   Search,
   RefreshCw,
-  Smartphone,
-  ShieldCheck,
-  AlertTriangle,
   FolderArchive,
-  Layers,
+  AlertTriangle,
+  FileCheck,
 } from 'lucide-react';
 import { AppPackage, DeviceDetails } from '../../types';
 import { translations, Language } from '../../lib/i18n';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
+import { ipc } from '../../lib/ipc';
 
 interface AppsViewProps {
   selectedDevice: DeviceDetails | null;
   language: Language;
+  confirmDestructive: boolean;
   onListPackages: (serial: string, filter: string) => Promise<AppPackage[]>;
   onInstallApk: (serial: string, apkPath: string, reinstall: boolean) => Promise<string>;
   onUninstallApp: (serial: string, pkg: string, keepData: boolean) => Promise<void>;
@@ -37,6 +36,7 @@ interface AppsViewProps {
 export const AppsView: React.FC<AppsViewProps> = ({
   selectedDevice,
   language,
+  confirmDestructive,
   onListPackages,
   onInstallApk,
   onUninstallApp,
@@ -50,6 +50,7 @@ export const AppsView: React.FC<AppsViewProps> = ({
   const [filter, setFilter] = useState<'all' | 'user' | 'system' | 'disabled'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isInstalling, setIsInstalling] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
   // Confirmation dialogs
@@ -130,12 +131,43 @@ export const AppsView: React.FC<AppsViewProps> = ({
     }
   };
 
-  const handleSimulateDropInstall = (fileName: string) => {
+  const handleInstallFile = async (apkPath: string) => {
     if (!selectedDevice) return;
-    onInstallApk(selectedDevice.serial, fileName, true).then(() => {
-      onNotify('success', 'APK Installed', `Successfully installed ${fileName}`);
+    const cleanPath = apkPath.trim();
+    if (!cleanPath) return;
+
+    if (!cleanPath.toLowerCase().endsWith('.apk')) {
+      onNotify(
+        'error',
+        'Invalid Extension',
+        'ApexDroid supports standard standalone .apk packages via direct ADB install. Split-bundle .apks/.xapk formats require custom multi-APK bundle installers.'
+      );
+      return;
+    }
+
+    setIsInstalling(true);
+    const fileName = cleanPath.split(/[/\\]/).pop() || cleanPath;
+    onNotify('info', 'Installing APK', `Sideloading ${fileName} via adb install -r...`);
+
+    try {
+      const res = await onInstallApk(selectedDevice.serial, cleanPath, true);
+      onNotify('success', 'APK Installed', `Successfully installed ${fileName} (${res})`);
       fetchPackages();
+    } catch (err: any) {
+      onNotify('error', 'Installation Failed', err.message || 'ADB rejected the APK package');
+    } finally {
+      setIsInstalling(false);
+    }
+  };
+
+  const handlePickApk = async () => {
+    const selected = await ipc.pickFile({
+      title: 'Select Android Package (.apk) to Install',
+      filters: [{ name: 'Android Package', extensions: ['apk'] }],
     });
+    if (selected) {
+      handleInstallFile(selected);
+    }
   };
 
   const filteredPackages = packages.filter((p) => {
@@ -165,11 +197,12 @@ export const AppsView: React.FC<AppsViewProps> = ({
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => handleSimulateDropInstall('com.example.app_release.apk')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-xs font-medium text-white shadow-sm shadow-cyan-950 transition-colors"
+            onClick={handlePickApk}
+            disabled={isInstalling}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-xs font-medium text-white shadow-sm shadow-cyan-950 transition-colors disabled:opacity-50"
           >
             <Upload className="w-3.5 h-3.5" />
-            <span>{t.installApkFile}</span>
+            <span>{isInstalling ? 'Installing APK...' : t.installApkFile}</span>
           </button>
 
           <button
@@ -183,7 +216,7 @@ export const AppsView: React.FC<AppsViewProps> = ({
         </div>
       </div>
 
-      {/* APK Drag and Drop Sideload Zone */}
+      {/* APK Sideload Drop Zone */}
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -193,19 +226,27 @@ export const AppsView: React.FC<AppsViewProps> = ({
         onDrop={(e) => {
           e.preventDefault();
           setIsDragging(false);
-          const file = e.dataTransfer.files[0];
-          handleSimulateDropInstall(file ? file.name : 'dropped_package.apk');
+          const files = e.dataTransfer.files;
+          if (files && files.length > 0) {
+            const file = files[0];
+            // In Tauri or browser environment with path property
+            const filePath = (file as any).path || file.name;
+            handleInstallFile(filePath);
+          }
         }}
-        className={`p-4 rounded-xl border border-dashed text-center transition-all ${
+        onClick={handlePickApk}
+        className={`p-4 rounded-xl border border-dashed text-center cursor-pointer transition-all ${
           isDragging
             ? 'border-cyan-400 bg-cyan-950/20'
             : 'border-neutral-800 bg-[#0b0f19] hover:border-neutral-700'
         }`}
       >
         <FolderArchive className="w-6 h-6 text-cyan-400 mx-auto mb-1.5" />
-        <div className="text-xs font-semibold text-neutral-200">{t.dragApkPrompt}</div>
+        <div className="text-xs font-semibold text-neutral-200">
+          {isInstalling ? 'Sideloading Package...' : t.dragApkPrompt}
+        </div>
         <div className="text-[11px] text-neutral-500 mt-0.5">
-          Supports .apk, .apks, and .xapk files · Automatically runs <code className="font-mono text-cyan-400">pm install -r</code>
+          Click or drop standard <code className="font-mono text-cyan-400">.apk</code> file to run <code className="font-mono text-cyan-400">adb install -r</code>
         </div>
       </div>
 
@@ -256,141 +297,160 @@ export const AppsView: React.FC<AppsViewProps> = ({
         </div>
 
         {/* Search Input */}
-        <div className="flex items-center gap-2 max-w-sm w-full bg-[#090b10] border border-neutral-800/80 rounded-lg px-2.5 py-1 text-neutral-400">
-          <Search className="w-3.5 h-3.5 text-neutral-500" />
+        <div className="relative w-full sm:w-64">
+          <Search className="w-3.5 h-3.5 text-neutral-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
           <input
             type="text"
+            placeholder={t.searchApps}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={t.searchApps}
-            className="bg-transparent w-full text-xs text-white placeholder:text-neutral-500 focus:outline-none"
+            className="w-full bg-[#090b10] border border-neutral-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-cyan-500"
           />
         </div>
       </div>
 
-      {/* Packages Table / List */}
-      <div className="rounded-xl border border-neutral-800/80 bg-[#0c1017] overflow-hidden">
+      {/* Package List Grid / Table */}
+      <div className="bg-[#0c1017] border border-neutral-800/80 rounded-xl overflow-hidden">
         {isLoading ? (
-          <div className="py-20 text-center text-xs text-neutral-500 flex items-center justify-center gap-2">
-            <RefreshCw className="w-4 h-4 animate-spin text-cyan-400" />
-            <span>Scanning installed packages over ADB...</span>
+          <div className="p-12 flex flex-col items-center justify-center gap-3 text-neutral-500">
+            <RefreshCw className="w-6 h-6 animate-spin text-cyan-500" />
+            <span className="text-xs font-medium">{t.loadingApps}</span>
           </div>
         ) : filteredPackages.length === 0 ? (
-          <div className="py-16 text-center text-xs text-neutral-500">
-            No matching applications found.
+          <div className="p-12 flex flex-col items-center justify-center gap-2 text-neutral-500">
+            <Boxes className="w-8 h-8 text-neutral-700" />
+            <span className="text-xs font-medium">{t.noAppsFound}</span>
           </div>
         ) : (
-          <div className="divide-y divide-neutral-800/50">
-            {filteredPackages.map((pkg) => (
-              <div
-                key={pkg.package_name}
-                className="p-3.5 hover:bg-[#101524] transition-colors flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs"
-              >
-                {/* App info */}
-                <div className="flex items-start gap-3 min-w-0">
-                  <div className="w-9 h-9 rounded-lg bg-neutral-800/90 border border-neutral-700/60 flex items-center justify-center shrink-0">
-                    <Boxes className="w-4 h-4 text-cyan-400" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold text-white truncate">{pkg.display_name}</span>
-                      <span className="text-[10px] text-neutral-500 font-mono">
-                        v{pkg.version_name || '1.0'} ({pkg.version_code || 1})
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-[#0e1422] text-neutral-400 font-medium border-b border-neutral-800/80">
+                <tr>
+                  <th className="py-2.5 px-4">{t.appName}</th>
+                  <th className="py-2.5 px-3">{t.packageName}</th>
+                  <th className="py-2.5 px-3 w-28">{t.type}</th>
+                  <th className="py-2.5 px-3 w-28">{t.state}</th>
+                  <th className="py-2.5 px-4 text-right w-44">{t.actions}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-900/60">
+                {filteredPackages.map((pkg) => (
+                  <tr key={pkg.package_name} className="hover:bg-neutral-900/40 transition-colors">
+                    <td className="py-2.5 px-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-7 h-7 rounded-lg bg-neutral-800/80 border border-neutral-700 flex items-center justify-center shrink-0">
+                          <Boxes className="w-3.5 h-3.5 text-cyan-400" />
+                        </div>
+                        <span className="font-semibold text-neutral-200">{pkg.display_name}</span>
+                      </div>
+                    </td>
+                    <td className="py-2.5 px-3 font-mono text-neutral-400 text-[11px]">
+                      {pkg.package_name}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <span
+                        className={`inline-block px-2 py-0.5 rounded text-[10px] font-medium border ${
+                          pkg.is_system
+                            ? 'bg-amber-950/30 text-amber-400 border-amber-500/20'
+                            : 'bg-cyan-950/30 text-cyan-400 border-cyan-500/20'
+                        }`}
+                      >
+                        {pkg.is_system ? 'System' : 'User'}
                       </span>
-                      {pkg.is_system ? (
-                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-neutral-800 text-neutral-400 font-mono">
-                          System
-                        </span>
-                      ) : (
-                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/40 font-mono">
-                          User
-                        </span>
-                      )}
-                      {!pkg.is_enabled && (
-                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-rose-950 text-rose-300 border border-rose-800/40 font-mono">
-                          Disabled
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[11px] text-neutral-400 font-mono truncate mt-0.5">
-                      {pkg.package_name} · <span className="text-neutral-500">{pkg.apk_path}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <div className="flex items-center gap-1.5 shrink-0 self-end md:self-center">
-                  <button
-                    onClick={() => handleLaunch(pkg)}
-                    className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-emerald-400 transition-colors"
-                    title={t.launchApp}
-                  >
-                    <Play className="w-3.5 h-3.5" />
-                  </button>
-
-                  <button
-                    onClick={() => handleForceStop(pkg)}
-                    className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-amber-400 transition-colors"
-                    title={t.forceStop}
-                  >
-                    <Square className="w-3.5 h-3.5" />
-                  </button>
-
-                  <button
-                    onClick={() => handleToggleEnable(pkg)}
-                    className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-cyan-400 transition-colors"
-                    title={pkg.is_enabled ? t.disable : t.enable}
-                  >
-                    {pkg.is_enabled ? (
-                      <ToggleRight className="w-4 h-4 text-cyan-400" />
-                    ) : (
-                      <ToggleLeft className="w-4 h-4 text-neutral-600" />
-                    )}
-                  </button>
-
-                  <button
-                    onClick={() => setClearDataTarget(pkg)}
-                    className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-amber-400 transition-colors"
-                    title={t.clearData}
-                  >
-                    <Eraser className="w-3.5 h-3.5" />
-                  </button>
-
-                  {!pkg.is_system && (
-                    <button
-                      onClick={() => setUninstallTarget(pkg)}
-                      className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-rose-400 transition-colors"
-                      title={t.uninstall}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border ${
+                          pkg.is_enabled
+                            ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/20'
+                            : 'bg-rose-950/30 text-rose-400 border-rose-500/20'
+                        }`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${pkg.is_enabled ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+                        {pkg.is_enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 text-right">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => handleLaunch(pkg)}
+                          className="p-1 hover:text-cyan-400 text-neutral-400 rounded hover:bg-neutral-800 transition-colors"
+                          title={t.launch}
+                        >
+                          <Play className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleForceStop(pkg)}
+                          className="p-1 hover:text-amber-400 text-neutral-400 rounded hover:bg-neutral-800 transition-colors"
+                          title={t.forceStop}
+                        >
+                          <Square className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleToggleEnable(pkg)}
+                          className="p-1 hover:text-indigo-400 text-neutral-400 rounded hover:bg-neutral-800 transition-colors"
+                          title={pkg.is_enabled ? t.disable : t.enable}
+                        >
+                          {pkg.is_enabled ? <ToggleRight className="w-4 h-4 text-emerald-400" /> : <ToggleLeft className="w-4 h-4 text-neutral-500" />}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (confirmDestructive) {
+                              setClearDataTarget(pkg);
+                            } else {
+                              onClearData(selectedDevice.serial, pkg.package_name);
+                            }
+                          }}
+                          className="p-1 hover:text-sky-400 text-neutral-400 rounded hover:bg-neutral-800 transition-colors"
+                          title={t.clearData}
+                        >
+                          <Eraser className="w-3.5 h-3.5" />
+                        </button>
+                        {!pkg.is_system && (
+                          <button
+                            onClick={() => {
+                              if (confirmDestructive) {
+                                setUninstallTarget(pkg);
+                              } else {
+                                onUninstallApp(selectedDevice.serial, pkg.package_name, false);
+                              }
+                            }}
+                            className="p-1 hover:text-rose-400 text-neutral-400 rounded hover:bg-neutral-800 transition-colors"
+                            title={t.uninstall}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
 
-      {/* Confirmation Dialogs */}
+      {/* Confirm Uninstall Dialog */}
       <ConfirmDialog
         isOpen={!!uninstallTarget}
-        title="Uninstall Application"
-        message={`Are you sure you want to uninstall ${uninstallTarget?.display_name} (${uninstallTarget?.package_name})?`}
-        confirmLabel="Uninstall"
+        title="Confirm Application Uninstall"
+        message={`Are you sure you want to uninstall "${uninstallTarget?.display_name}" (${uninstallTarget?.package_name})? Application data may be removed.`}
+        confirmLabel={t.uninstall}
         isDestructive={true}
-        onCancel={() => setUninstallTarget(null)}
         onConfirm={handleUninstallConfirm}
+        onCancel={() => setUninstallTarget(null)}
       />
 
+      {/* Confirm Clear Data Dialog */}
       <ConfirmDialog
         isOpen={!!clearDataTarget}
-        title="Clear App Data"
-        message={`This will delete all database storage, logins, and cached settings for ${clearDataTarget?.display_name}. Proceed?`}
+        title="Confirm Clear Data"
+        message={`Are you sure you want to clear all data and cache for "${clearDataTarget?.display_name}"? This resets the application to its first-run state.`}
         confirmLabel="Clear Data"
         isDestructive={true}
-        onCancel={() => setClearDataTarget(null)}
         onConfirm={handleClearDataConfirm}
+        onCancel={() => setClearDataTarget(null)}
       />
     </div>
   );

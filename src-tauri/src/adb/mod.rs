@@ -1,5 +1,7 @@
 use crate::errors::{AppError, AppResult};
-use std::process::Stdio;
+use parking_lot::RwLock;
+use std::path::Path;
+use std::sync::Arc;
 use tokio::process::Command;
 use tracing::{debug, error, info, warn};
 
@@ -48,20 +50,26 @@ pub struct RawAdbDevice {
 }
 
 pub struct AdbClient {
-    custom_adb_path: Option<String>,
+    custom_adb_path: Arc<RwLock<Option<String>>>,
 }
 
 impl AdbClient {
     pub fn new(custom_path: Option<String>) -> Self {
         Self {
-            custom_adb_path: custom_path,
+            custom_adb_path: Arc::new(RwLock::new(custom_path)),
         }
     }
 
+    pub fn set_custom_path(&self, path: Option<String>) {
+        *self.custom_adb_path.write() = path;
+    }
+
     pub fn get_adb_binary(&self) -> String {
-        if let Some(ref path) = self.custom_adb_path {
-            if !path.trim().is_empty() {
-                return path.clone();
+        let guard = self.custom_adb_path.read();
+        if let Some(ref path) = *guard {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
             }
         }
         "adb".to_string()
@@ -73,7 +81,7 @@ impl AdbClient {
             .arg("version")
             .output()
             .await
-            .map_err(|e| AppError::Adb(format!("Failed to execute '{} version': {}", bin, e)))?;
+            .map_err(|e| AppError::Adb(format!("Failed to execute '{} version': {}. Ensure ADB is installed or configured in Settings.", bin, e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -103,6 +111,7 @@ impl AdbClient {
     }
 
     pub async fn run_shell(&self, serial: &str, shell_command: &str) -> AppResult<String> {
+        validate_serial(serial)?;
         let bin = self.get_adb_binary();
         debug!(serial, shell_command, "Executing ADB shell command");
 
@@ -110,14 +119,15 @@ impl AdbClient {
             .args(["-s", serial, "shell", shell_command])
             .output()
             .await
-            .map_err(|e| AppError::ProcessExecution(format!("Shell command error: {}", e)))?;
+            .map_err(|e| AppError::ProcessExecution(format!("Shell command error on device {}: {}", serial, e)))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            // Some shell tools exit with non-zero but return useful info (like grep)
+            // Some tools exit non-zero but return useful output
             if stdout.is_empty() && !stderr.is_empty() {
-                return Err(AppError::Adb(format!("Shell error: {}", stderr)));
+                return Err(AppError::Adb(format!("Shell error: {}", stderr.trim())));
             }
         }
 
@@ -131,12 +141,18 @@ impl AdbClient {
         let start = Command::new(&bin).arg("start-server").output().await
             .map_err(|e| AppError::Adb(format!("Failed to start ADB server: {}", e)))?;
 
+        if !start.status.success() {
+            let err = String::from_utf8_lossy(&start.stderr);
+            return Err(AppError::Adb(format!("ADB server start failed: {}", err)));
+        }
+
         let out = String::from_utf8_lossy(&start.stdout).to_string();
         info!("ADB server restarted");
-        Ok(out)
+        Ok(if out.trim().is_empty() { "ADB daemon started successfully".to_string() } else { out })
     }
 
     pub async fn connect_wireless(&self, host_port: &str) -> AppResult<String> {
+        validate_host_port(host_port)?;
         let bin = self.get_adb_binary();
         let output = Command::new(&bin)
             .args(["connect", host_port])
@@ -145,39 +161,60 @@ impl AdbClient {
             .map_err(|e| AppError::Adb(format!("Failed to connect to wireless device: {}", e)))?;
 
         let text = String::from_utf8_lossy(&output.stdout).to_string();
-        if text.contains("failed") || text.contains("unable") {
-            return Err(AppError::Adb(text));
+        let err_text = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() || text.contains("failed") || text.contains("unable") || text.contains("cannot") {
+            let combined = if err_text.is_empty() { text } else { format!("{} {}", text, err_text) };
+            return Err(AppError::Adb(format!("Wireless connection failed: {}", combined.trim())));
         }
-        Ok(text)
+        Ok(text.trim().to_string())
     }
 
     pub async fn pair_wireless(&self, host_port: &str, code: &str) -> AppResult<String> {
+        validate_host_port(host_port)?;
+        if code.trim().is_empty() || code.len() > 16 {
+            return Err(AppError::Validation("Pairing code must be 1 to 16 characters".to_string()));
+        }
+
         let bin = self.get_adb_binary();
         let output = Command::new(&bin)
-            .args(["pair", host_port, code])
+            .args(["pair", host_port, code.trim()])
             .output()
             .await
             .map_err(|e| AppError::Adb(format!("Failed to pair with wireless device: {}", e)))?;
 
         let text = String::from_utf8_lossy(&output.stdout).to_string();
-        if text.contains("failed") || text.contains("error") {
-            return Err(AppError::Adb(text));
+        let err_text = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() || text.contains("failed") || text.contains("error") || text.contains("unable") {
+            let combined = if err_text.is_empty() { text } else { format!("{} {}", text, err_text) };
+            return Err(AppError::Adb(format!("Wireless pairing failed: {}", combined.trim())));
         }
-        Ok(text)
+        Ok(text.trim().to_string())
     }
 
     pub async fn reboot(&self, serial: &str, mode: Option<&str>) -> AppResult<String> {
+        validate_serial(serial)?;
         let bin = self.get_adb_binary();
         let mut cmd = Command::new(&bin);
         cmd.args(["-s", serial, "reboot"]);
+
         if let Some(m) = mode {
-            if !m.is_empty() {
-                cmd.arg(m);
+            let trimmed = m.trim();
+            if !trimmed.is_empty() {
+                match trimmed {
+                    "bootloader" | "recovery" | "sideload" | "edl" => {
+                        cmd.arg(trimmed);
+                    }
+                    _ => {
+                        return Err(AppError::Validation(format!("Unsupported reboot mode: '{}'. Supported modes: bootloader, recovery, sideload, edl", trimmed)));
+                    }
+                }
             }
         }
 
         let output = cmd.output().await
-            .map_err(|e| AppError::Adb(format!("Failed to reboot device {}: {}", serial, e)))?;
+            .map_err(|e| AppError::Adb(format!("Failed to execute reboot command on {}: {}", serial, e)))?;
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
@@ -205,41 +242,116 @@ impl AdbClient {
         Ok(())
     }
 
-    pub async fn take_screenshot(&self, serial: &str, destination_path: &str) -> AppResult<()> {
+    pub async fn take_screenshot(&self, serial: &str, destination_path: &str) -> AppResult<u64> {
         validate_serial(serial)?;
+        if destination_path.trim().is_empty() {
+            return Err(AppError::Validation("Destination path cannot be empty".to_string()));
+        }
+
+        let dest = Path::new(destination_path);
+        if let Some(parent) = dest.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| AppError::Filesystem(format!("Failed to create screenshot destination directory {:?}: {}", parent, e)))?;
+            }
+        }
+
         let bin = self.get_adb_binary();
-        let remote_tmp = "/sdcard/apexdroid_screenshot_tmp.png";
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let remote_tmp = format!("/sdcard/.apexdroid_screencap_{}.png", unique_id);
 
         // Step 1: capture on device
         let cap = Command::new(&bin)
-            .args(["-s", serial, "shell", "screencap", "-p", remote_tmp])
+            .args(["-s", serial, "shell", "screencap", "-p", &remote_tmp])
             .output()
             .await
-            .map_err(|e| AppError::Adb(format!("Screencap failed: {}", e)))?;
+            .map_err(|e| AppError::Adb(format!("Screencap process failed: {}", e)))?;
 
         if !cap.status.success() {
             let err = String::from_utf8_lossy(&cap.stderr);
-            return Err(AppError::Adb(format!("Screenshot capture failed: {}", err)));
+            // Attempt remote cleanup
+            let _ = Command::new(&bin).args(["-s", serial, "shell", "rm", "-f", &remote_tmp]).output().await;
+            return Err(AppError::Adb(format!("Screenshot capture failed on device: {}", err.trim())));
         }
 
         // Step 2: pull to destination
         let pull = Command::new(&bin)
-            .args(["-s", serial, "pull", remote_tmp, destination_path])
+            .args(["-s", serial, "pull", &remote_tmp, destination_path])
             .output()
             .await
-            .map_err(|e| AppError::Adb(format!("Pull screenshot failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::Adb(format!("Pulling screenshot file failed: {}", e))
+            });
 
-        // Step 3: clean up remote temp file (best-effort)
+        // Step 3: ALWAYS clean up remote temp file
         let _ = Command::new(&bin)
-            .args(["-s", serial, "shell", "rm", "-f", remote_tmp])
+            .args(["-s", serial, "shell", "rm", "-f", &remote_tmp])
             .output()
             .await;
 
-        if !pull.status.success() {
-            let err = String::from_utf8_lossy(&pull.stderr);
-            return Err(AppError::Adb(format!("Failed to pull screenshot file: {}", err)));
+        let pull_output = pull?;
+        if !pull_output.status.success() {
+            let err = String::from_utf8_lossy(&pull_output.stderr);
+            return Err(AppError::Adb(format!("Failed to transfer screenshot: {}", err.trim())));
         }
 
+        // Step 4: Verify local file actually exists and is non-empty
+        let meta = std::fs::metadata(dest)
+            .map_err(|e| AppError::Filesystem(format!("Screenshot file verification failed at {:?}: {}", dest, e)))?;
+
+        if meta.len() == 0 {
+            let _ = std::fs::remove_file(dest);
+            return Err(AppError::Filesystem("Captured screenshot is 0 bytes (empty file)".to_string()));
+        }
+
+        info!(serial, destination_path, size_bytes = meta.len(), "Screenshot successfully captured and verified");
+        Ok(meta.len())
+    }
+
+    pub async fn get_logcat(&self, serial: &str, max_lines: u32, filter: Option<&str>) -> AppResult<Vec<String>> {
+        validate_serial(serial)?;
+        let bin = self.get_adb_binary();
+        let limit = if max_lines == 0 || max_lines > 2000 { 200 } else { max_lines };
+
+        let mut cmd = Command::new(&bin);
+        cmd.args(["-s", serial, "logcat", "-d", "-v", "time", "-t", &limit.to_string()]);
+
+        if let Some(f) = filter {
+            let trimmed = f.trim();
+            if !trimmed.is_empty() {
+                cmd.arg(trimmed);
+            }
+        }
+
+        let output = cmd.output().await
+            .map_err(|e| AppError::Adb(format!("Failed to retrieve logcat from {}: {}", serial, e)))?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::Adb(format!("Logcat query failed: {}", err.trim())));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines = stdout.lines().map(|s| s.to_string()).collect();
+        Ok(lines)
+    }
+
+    pub async fn clear_logcat(&self, serial: &str) -> AppResult<()> {
+        validate_serial(serial)?;
+        let bin = self.get_adb_binary();
+        let output = Command::new(&bin)
+            .args(["-s", serial, "logcat", "-c"])
+            .output()
+            .await
+            .map_err(|e| AppError::Adb(format!("Failed to clear logcat: {}", e)))?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::Adb(format!("Clear logcat failed: {}", err.trim())));
+        }
         Ok(())
     }
 }
@@ -254,6 +366,17 @@ pub fn validate_serial(serial: &str) -> AppResult<()> {
     Ok(())
 }
 
+pub fn validate_host_port(host_port: &str) -> AppResult<()> {
+    let trimmed = host_port.trim();
+    if trimmed.is_empty() || trimmed.len() > 128 {
+        return Err(AppError::Validation("Host:port cannot be empty or exceed 128 characters".to_string()));
+    }
+    if trimmed.chars().any(|c| c.is_whitespace() || c == ';' || c == '&' || c == '|' || c == '$' || c == '`' || c == '"' || c == '\'') {
+        return Err(AppError::Validation(format!("Invalid characters in host:port: '{}'", host_port)));
+    }
+    Ok(())
+}
+
 pub fn validate_identifier(ident: &str) -> AppResult<()> {
     if ident.is_empty()
         || ident.len() > 128
@@ -262,6 +385,10 @@ pub fn validate_identifier(ident: &str) -> AppResult<()> {
         return Err(AppError::Validation(format!("Invalid identifier: '{}'", ident)));
     }
     Ok(())
+}
+
+pub fn escape_shell_arg(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 pub fn parse_adb_version(output: &str, path: &str) -> AdbVersion {
@@ -374,5 +501,21 @@ TEST_OFFLINE           offline
         let parsed = parse_adb_version(sample, "/usr/bin/adb");
         assert_eq!(parsed.version_string, "1.0.41");
         assert!(parsed.revision.contains("34.0.5"));
+    }
+
+    #[test]
+    fn test_validation() {
+        assert!(validate_serial("emulator-5554").is_ok());
+        assert!(validate_serial("192.168.1.50:5555").is_ok());
+        assert!(validate_serial("device;rm -rf /").is_err());
+        assert!(validate_serial("device$foo").is_err());
+        assert!(validate_serial("").is_err());
+
+        assert!(validate_host_port("192.168.1.50:5555").is_ok());
+        assert!(validate_host_port("localhost:5555").is_ok());
+        assert!(validate_host_port("192.168.1.50:5555; rm -rf").is_err());
+
+        assert_eq!(escape_shell_arg("/sdcard/My Pictures/file.png"), "'/sdcard/My Pictures/file.png'");
+        assert_eq!(escape_shell_arg("O'Reilly.apk"), "'O'\\''Reilly.apk'");
     }
 }

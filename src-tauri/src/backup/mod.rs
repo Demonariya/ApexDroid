@@ -2,11 +2,13 @@ use crate::adb::AdbClient;
 use crate::errors::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,27 +60,56 @@ pub struct RestoreResult {
 }
 
 pub struct BackupManager {
-    adb: AdbClient,
-    is_cancelled: Arc<AtomicBool>,
+    adb: Arc<AdbClient>,
+    active_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl BackupManager {
-    pub fn new(adb: AdbClient) -> Self {
+    pub fn new(adb: Arc<AdbClient>) -> Self {
         Self {
             adb,
-            is_cancelled: Arc::new(AtomicBool::new(false)),
+            active_cancels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn cancel(&self) {
-        self.is_cancelled.store(true, Ordering::Relaxed);
+    pub async fn cancel_backup(&self, serial: &str) {
+        let cancels = self.active_cancels.lock().await;
+        if let Some(flag) = cancels.get(serial) {
+            flag.store(true, Ordering::SeqCst);
+        }
     }
 
     pub async fn run_backup<F>(&self, plan: BackupPlan, mut progress_callback: F) -> AppResult<BackupManifest>
     where
         F: FnMut(BackupProgress) + Send + 'static,
     {
-        self.is_cancelled.store(false, Ordering::Relaxed);
+        let serial = plan.serial.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+
+        {
+            let mut cancels = self.active_cancels.lock().await;
+            cancels.insert(serial.clone(), cancel_flag.clone());
+        }
+
+        let result = self.execute_backup(&plan, &cancel_flag, &mut progress_callback).await;
+
+        {
+            let mut cancels = self.active_cancels.lock().await;
+            cancels.remove(&serial);
+        }
+
+        result
+    }
+
+    async fn execute_backup<F>(
+        &self,
+        plan: &BackupPlan,
+        cancel_flag: &Arc<AtomicBool>,
+        progress_callback: &mut F,
+    ) -> AppResult<BackupManifest>
+    where
+        F: FnMut(BackupProgress) + Send + 'static,
+    {
         let serial = &plan.serial;
         let dest = Path::new(&plan.destination_dir);
 
@@ -87,10 +118,12 @@ impl BackupManager {
 
         let apks_dir = dest.join("apks");
         let media_dir = dest.join("media");
-        std::fs::create_dir_all(&apks_dir).ok();
-        std::fs::create_dir_all(&media_dir).ok();
+        std::fs::create_dir_all(&apks_dir)
+            .map_err(|e| AppError::Backup(format!("Cannot create apks directory {:?}: {}", apks_dir, e)))?;
+        std::fs::create_dir_all(&media_dir)
+            .map_err(|e| AppError::Backup(format!("Cannot create media directory {:?}: {}", media_dir, e)))?;
 
-        let total_items = plan.specific_packages.len() + if plan.include_shared_storage { 1 } else { 0 };
+        let total_items = plan.specific_packages.len() + if plan.include_shared_storage { 2 } else { 0 };
         let mut completed = 0;
         let mut total_bytes: u64 = 0;
         let mut manifest_items = Vec::new();
@@ -104,10 +137,10 @@ impl BackupManager {
             bytes_transferred: 0,
         });
 
-        // 1. Backup APKs if requested
+        // 1. Backup user APKs if requested
         if plan.include_apk {
             for pkg in &plan.specific_packages {
-                if self.is_cancelled.load(Ordering::Relaxed) {
+                if cancel_flag.load(Ordering::SeqCst) {
                     return Err(AppError::Backup("Backup cancelled by user".to_string()));
                 }
 
@@ -120,7 +153,6 @@ impl BackupManager {
                     bytes_transferred: total_bytes,
                 });
 
-                // Query remote APK path via `pm path <package>`
                 let path_cmd = format!("pm path {}", pkg);
                 let path_output = self.adb.run_shell(serial, &path_cmd).await.unwrap_or_default();
                 let remote_apk = path_output
@@ -134,90 +166,104 @@ impl BackupManager {
                     let local_file = apks_dir.join(&local_apk_name);
                     let local_str = local_file.to_string_lossy().to_string();
 
-                    // Real pull via adb
                     let bin = self.adb.get_adb_binary();
-                    let pull_status = tokio::process::Command::new(&bin)
+                    let pull_output = tokio::process::Command::new(&bin)
                         .args(["-s", serial, "pull", remote_path, &local_str])
-                        .status()
-                        .await;
+                        .output()
+                        .await
+                        .map_err(|e| AppError::Backup(format!("Failed to pull APK {}: {}", pkg, e)))?;
 
-                    if let Ok(st) = pull_status {
-                        if st.success() && local_file.exists() {
-                            let size = std::fs::metadata(&local_file).map(|m| m.len()).unwrap_or(0);
-                            let hash = compute_sha256(&local_file).unwrap_or_else(|_| "hash_failed".to_string());
-                            total_bytes += size;
-
-                            manifest_items.push(BackupManifestItem {
-                                relative_path: format!("apks/{}", local_apk_name),
-                                size_bytes: size,
-                                sha256_hash: hash,
-                                item_type: "apk".to_string(),
-                                package_name: Some(pkg.clone()),
-                            });
-                        }
+                    if !pull_output.status.success() || !local_file.exists() {
+                        let err = String::from_utf8_lossy(&pull_output.stderr);
+                        return Err(AppError::Backup(format!("ADB pull failed for APK {}: {}", pkg, err.trim())));
                     }
+
+                    let size = std::fs::metadata(&local_file).map(|m| m.len()).unwrap_or(0);
+                    let hash = compute_sha256(&local_file)
+                        .map_err(|e| AppError::Backup(format!("Failed to hash pulled APK {}: {}", pkg, e)))?;
+
+                    total_bytes += size;
+                    manifest_items.push(BackupManifestItem {
+                        relative_path: format!("apks/{}", local_apk_name),
+                        size_bytes: size,
+                        sha256_hash: hash,
+                        item_type: "apk".to_string(),
+                        package_name: Some(pkg.clone()),
+                    });
+                } else {
+                    return Err(AppError::Backup(format!("Package '{}' not found on device or has no extractable base APK", pkg)));
                 }
 
                 completed += 1;
             }
         }
 
-        // 2. Backup accessible user storage (/sdcard/Documents, /sdcard/Download)
+        // 2. Backup accessible user storage
         if plan.include_shared_storage {
-            if self.is_cancelled.load(Ordering::Relaxed) {
-                return Err(AppError::Backup("Backup cancelled by user".to_string()));
-            }
-
-            progress_callback(BackupProgress {
-                phase: "backing_up_media".to_string(),
-                current_item: "Pulling shared user storage (/sdcard/Documents, Download)".to_string(),
-                items_completed: completed,
-                total_items,
-                percentage: 85.0,
-                bytes_transferred: total_bytes,
-            });
-
-            let bin = self.adb.get_adb_binary();
             for folder in ["/sdcard/Documents", "/sdcard/Download"] {
-                let target_dir = media_dir.to_string_lossy().to_string();
-                let _ = tokio::process::Command::new(&bin)
-                    .args(["-s", serial, "pull", folder, &target_dir])
-                    .status()
-                    .await;
+                if cancel_flag.load(Ordering::SeqCst) {
+                    return Err(AppError::Backup("Backup cancelled by user".to_string()));
+                }
+
+                let folder_name = folder.rsplit('/').next().unwrap_or("media");
+                progress_callback(BackupProgress {
+                    phase: "backing_up_media".to_string(),
+                    current_item: format!("Pulling {}", folder),
+                    items_completed: completed,
+                    total_items,
+                    percentage: if total_items > 0 { (completed as f32 / total_items as f32) * 100.0 } else { 0.0 },
+                    bytes_transferred: total_bytes,
+                });
+
+                let target_sub = media_dir.join(folder_name);
+                std::fs::create_dir_all(&target_sub).ok();
+
+                let bin = self.adb.get_adb_binary();
+                let pull_res = tokio::process::Command::new(&bin)
+                    .args(["-s", serial, "pull", folder, &media_dir.to_string_lossy()])
+                    .output()
+                    .await
+                    .map_err(|e| AppError::Backup(format!("Failed to pull storage folder {}: {}", folder, e)))?;
+
+                if !pull_res.status.success() {
+                    let err = String::from_utf8_lossy(&pull_res.stderr);
+                    warn!(folder, error = %err, "ADB storage pull warning/non-zero");
+                }
+
+                completed += 1;
             }
 
-            // Inspect pulled media files for real hashes and sizes
-            if let Ok(entries) = std::fs::read_dir(&media_dir) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.is_file() {
-                        let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-                        let hash = compute_sha256(&p).unwrap_or_else(|_| "hash_failed".to_string());
-                        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-                        total_bytes += size;
+            // Recursively collect all pulled media files
+            let mut media_files = Vec::new();
+            collect_files_recursive(&media_dir, &mut media_files);
 
-                        manifest_items.push(BackupManifestItem {
-                            relative_path: format!("media/{}", name),
-                            size_bytes: size,
-                            sha256_hash: hash,
-                            item_type: "media".to_string(),
-                            package_name: None,
-                        });
-                    }
+            for file_path in media_files {
+                let size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+                let hash = compute_sha256(&file_path)
+                    .map_err(|e| AppError::Backup(format!("Failed to hash media file {:?}: {}", file_path, e)))?;
+
+                if let Ok(rel) = file_path.strip_prefix(dest) {
+                    let rel_clean = rel.to_string_lossy().replace('\\', "/");
+                    total_bytes += size;
+                    manifest_items.push(BackupManifestItem {
+                        relative_path: rel_clean,
+                        size_bytes: size,
+                        sha256_hash: hash,
+                        item_type: "media".to_string(),
+                        package_name: None,
+                    });
                 }
             }
-
-            completed += 1;
         }
 
-        // 3. Write real manifest
+        // 3. Write verified completion manifest
         let manifest = BackupManifest {
             format_version: "1.0.0".to_string(),
             timestamp_iso: chrono::Utc::now().to_rfc3339(),
             device_serial: serial.to_string(),
             total_bytes,
             total_files: manifest_items.len(),
-            security_disclaimer: "Standard ADB user-level backup. In compliance with Android security invariants, private app sandbox data (/data/data) and system secure settings require Android Backup Agent permission or root.".to_string(),
+            security_disclaimer: "Standard ADB user-level backup. Private sandbox data (/data/data) and system secure settings require Android Backup Agent permission or root.".to_string(),
             items: manifest_items,
         };
 
@@ -263,49 +309,88 @@ impl BackupManager {
         let bin = self.adb.get_adb_binary();
 
         for item in &manifest.items {
+            // Path traversal prevention: validate relative path strictly
+            if is_path_traversal(&item.relative_path) {
+                failed += 1;
+                details.push(format!("Rejected unsafe path with directory traversal: '{}'", item.relative_path));
+                continue;
+            }
+
             let local_path = dir.join(&item.relative_path);
             if !local_path.exists() {
                 failed += 1;
-                details.push(format!("File missing: {:?}", item.relative_path));
+                details.push(format!("File missing on disk: '{}'", item.relative_path));
                 continue;
+            }
+
+            // Verify stored SHA-256 hash before restoring!
+            match compute_sha256(&local_path) {
+                Ok(actual_hash) => {
+                    if actual_hash != item.sha256_hash {
+                        failed += 1;
+                        details.push(format!("SHA-256 hash mismatch for '{}' (corrupt file)", item.relative_path));
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    details.push(format!("Cannot hash '{}': {}", item.relative_path, e));
+                    continue;
+                }
             }
 
             if item.item_type == "apk" {
                 let local_str = local_path.to_string_lossy().to_string();
-                let status = tokio::process::Command::new(&bin)
+                let output = tokio::process::Command::new(&bin)
                     .args(["-s", serial, "install", "-r", &local_str])
-                    .status()
+                    .output()
                     .await;
 
-                if let Ok(st) = status {
-                    if st.success() {
+                match output {
+                    Ok(out) if out.status.success() && String::from_utf8_lossy(&out.stdout).contains("Success") => {
                         successful += 1;
                         details.push(format!("Installed APK: {}", item.relative_path));
-                    } else {
-                        failed += 1;
-                        details.push(format!("Failed to install APK: {}", item.relative_path));
                     }
-                } else {
-                    failed += 1;
+                    Ok(out) => {
+                        failed += 1;
+                        let err = String::from_utf8_lossy(&out.stderr);
+                        let out_str = String::from_utf8_lossy(&out.stdout);
+                        details.push(format!("Failed to install APK {}: {} {}", item.relative_path, out_str.trim(), err.trim()));
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        details.push(format!("Failed to execute adb install for {}: {}", item.relative_path, e));
+                    }
                 }
             } else if item.item_type == "media" {
                 let local_str = local_path.to_string_lossy().to_string();
-                let remote_target = format!("/sdcard/Download/{}", local_path.file_name().unwrap_or_default().to_string_lossy());
-                let status = tokio::process::Command::new(&bin)
+                // Strip "media/" prefix and preserve relative path on device under /sdcard/
+                let rel_on_device = item.relative_path.strip_prefix("media/").unwrap_or(&item.relative_path);
+                let remote_target = format!("/sdcard/{}", rel_on_device);
+
+                let output = tokio::process::Command::new(&bin)
                     .args(["-s", serial, "push", &local_str, &remote_target])
-                    .status()
+                    .output()
                     .await;
 
-                if let Ok(st) = status {
-                    if st.success() {
+                match output {
+                    Ok(out) if out.status.success() => {
                         successful += 1;
-                        details.push(format!("Restored media: {}", item.relative_path));
-                    } else {
-                        failed += 1;
+                        details.push(format!("Restored media file: {}", item.relative_path));
                     }
-                } else {
-                    failed += 1;
+                    Ok(out) => {
+                        failed += 1;
+                        let err = String::from_utf8_lossy(&out.stderr);
+                        details.push(format!("Failed to push {}: {}", item.relative_path, err.trim()));
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        details.push(format!("ADB push error {}: {}", item.relative_path, e));
+                    }
                 }
+            } else {
+                failed += 1;
+                details.push(format!("Unsupported item type: '{}'", item.item_type));
             }
         }
 
@@ -318,39 +403,59 @@ impl BackupManager {
     }
 }
 
-pub fn compute_sha256(path: &Path) -> std::io::Result<String> {
+pub fn is_path_traversal(rel_path: &str) -> bool {
+    let p = Path::new(rel_path);
+    if p.is_absolute() {
+        return true;
+    }
+    for comp in p.components() {
+        match comp {
+            std::path::Component::ParentDir => return true,
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn collect_files_recursive(dir: &Path, list: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                collect_files_recursive(&p, list);
+            } else if p.is_file() {
+                list.push(p);
+            }
+        }
+    }
+}
+
+pub fn compute_sha256(path: &Path) -> Result<String, std::io::Error> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
-
     loop {
-        let bytes_read = file.read(&mut buffer)?;
-        if bytes_read == 0 {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
             break;
         }
-        hasher.update(&buffer[..bytes_read]);
+        hasher.update(&buffer[..count]);
     }
-
-    let hash = hasher.finalize();
-    Ok(format!("{:x}", hash))
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
-    fn test_compute_sha256() {
-        let temp_dir = std::env::temp_dir();
-        let file_path = temp_dir.join("test_sha256.txt");
-        let mut file = File::create(&file_path).unwrap();
-        file.write_all(b"ApexDroid Test Integrity").unwrap();
-
-        let hash = compute_sha256(&file_path).unwrap();
-        assert!(!hash.is_empty());
-        assert_eq!(hash.len(), 64); // SHA-256 is 64 hex chars
-
-        std::fs::remove_file(file_path).ok();
+    fn test_path_traversal_detection() {
+        assert!(is_path_traversal("../secret.txt"));
+        assert!(is_path_traversal("apks/../../etc/passwd"));
+        assert!(is_path_traversal("/absolute/path/file.apk"));
+        assert!(is_path_traversal("C:\\Windows\\system32"));
+        assert!(!is_path_traversal("apks/base.apk"));
+        assert!(!is_path_traversal("media/Documents/doc.pdf"));
     }
 }

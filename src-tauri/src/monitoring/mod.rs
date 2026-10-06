@@ -18,13 +18,13 @@ pub struct DeviceChangeEvent {
 }
 
 pub struct DeviceMonitor {
-    adb: AdbClient,
+    adb: Arc<AdbClient>,
     known_serials: Arc<RwLock<HashSet<String>>>,
     is_running: Arc<AtomicBool>,
 }
 
 impl DeviceMonitor {
-    pub fn new(adb: AdbClient) -> Self {
+    pub fn new(adb: Arc<AdbClient>) -> Self {
         Self {
             adb,
             known_serials: Arc::new(RwLock::new(HashSet::new())),

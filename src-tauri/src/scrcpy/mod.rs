@@ -1,17 +1,20 @@
 use crate::errors::{AppError, AppResult};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 use tokio::process::Child;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrcpyConfig {
-    pub max_size: u32,       // e.g. 1920, 1080
-    pub bit_rate_mbps: u32,  // e.g. 8
-    pub max_fps: u32,        // e.g. 60
+    pub max_size: u32,
+    pub bit_rate_mbps: u32,
+    pub max_fps: u32,
     pub stay_awake: bool,
     pub turn_screen_off: bool,
     pub show_touches: bool,
@@ -36,34 +39,45 @@ impl Default for ScrcpyConfig {
     }
 }
 
+pub struct ActiveSession {
+    pub child: Child,
+    pub is_recording: bool,
+    pub record_destination: Option<String>,
+}
+
 pub struct ScrcpyManager {
-    custom_scrcpy_path: Option<String>,
-    running_processes: Arc<Mutex<HashMap<String, Child>>>,
+    custom_scrcpy_path: Arc<RwLock<Option<String>>>,
+    sessions: Arc<Mutex<HashMap<String, ActiveSession>>>,
 }
 
 impl ScrcpyManager {
     pub fn new(custom_path: Option<String>) -> Self {
         Self {
-            custom_scrcpy_path: custom_path,
-            running_processes: Arc::new(Mutex::new(HashMap::new())),
+            custom_scrcpy_path: Arc::new(RwLock::new(custom_path)),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
+    pub fn set_custom_path(&self, path: Option<String>) {
+        *self.custom_scrcpy_path.write() = path;
+    }
+
     pub fn get_scrcpy_binary(&self) -> String {
-        if let Some(ref path) = self.custom_scrcpy_path {
-            if !path.trim().is_empty() {
-                return path.clone();
+        let guard = self.custom_scrcpy_path.read();
+        if let Some(ref path) = *guard {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
             }
         }
         "scrcpy".to_string()
     }
 
     pub async fn start_mirroring(&self, serial: &str, config: ScrcpyConfig) -> AppResult<bool> {
-        let mut processes = self.running_processes.lock().await;
+        let mut sessions = self.sessions.lock().await;
 
-        // If already running for this device, stop first
-        if let Some(mut existing) = processes.remove(serial) {
-            let _ = existing.kill().await;
+        if let Some(mut existing) = sessions.remove(serial) {
+            let _ = existing.child.kill().await;
         }
 
         let bin = self.get_scrcpy_binary();
@@ -89,28 +103,77 @@ impl ScrcpyManager {
         if config.fullscreen {
             cmd.arg("--fullscreen");
         }
+
+        let is_recording = config.record_path.is_some();
+        let rec_dest = config.record_path.clone();
+
         if let Some(ref rec) = config.record_path {
-            if !rec.trim().is_empty() {
-                cmd.args(["--record", rec]);
+            let trimmed = rec.trim();
+            if !trimmed.is_empty() {
+                if let Some(parent) = Path::new(trimmed).parent() {
+                    if !parent.as_os_str().is_empty() && !parent.exists() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                }
+                cmd.args(["--record", trimmed]);
             }
         }
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let child = cmd.spawn()
-            .map_err(|e| AppError::Scrcpy(format!("Failed to start scrcpy executable '{}': {}. Make sure scrcpy is installed in PATH.", bin, e)))?;
+        let mut child = cmd.spawn()
+            .map_err(|e| AppError::Scrcpy(format!(
+                "Failed to launch scrcpy executable '{}': {}. Ensure scrcpy is installed in PATH or configured in Settings.",
+                bin, e
+            )))?;
 
-        info!(serial, "Launched scrcpy mirror session");
-        processes.insert(serial.to_string(), child);
+        // Asynchronously consume stdout and stderr so pipes never block the child process
+        if let Some(mut stdout) = child.stdout.take() {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = stdout.read(&mut buf).await {
+                    if n == 0 { break; }
+                }
+            });
+        }
+        if let Some(mut stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = stderr.read(&mut buf).await {
+                    if n == 0 { break; }
+                }
+            });
+        }
+
+        info!(serial, is_recording, "Launched scrcpy session");
+        sessions.insert(serial.to_string(), ActiveSession {
+            child,
+            is_recording,
+            record_destination: rec_dest,
+        });
 
         Ok(true)
     }
 
     pub async fn stop_mirroring(&self, serial: &str) -> AppResult<bool> {
-        let mut processes = self.running_processes.lock().await;
-        if let Some(mut child) = processes.remove(serial) {
-            let _ = child.kill().await;
+        let mut sessions = self.sessions.lock().await;
+        if let Some(mut session) = sessions.remove(serial) {
+            let _ = session.child.kill().await;
             info!(serial, "Terminated scrcpy session");
+
+            // If it was recording, verify output file
+            if let Some(dest) = session.record_destination {
+                let p = Path::new(&dest);
+                if p.exists() {
+                    let len = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                    if len == 0 {
+                        let _ = std::fs::remove_file(p);
+                        return Err(AppError::Scrcpy("Recorded video file is 0 bytes (empty)".to_string()));
+                    }
+                    info!(destination = %dest, size_bytes = len, "Verified saved screen recording");
+                }
+            }
+
             Ok(true)
         } else {
             Ok(false)
@@ -118,12 +181,30 @@ impl ScrcpyManager {
     }
 
     pub async fn is_mirroring(&self, serial: &str) -> bool {
-        let mut processes = self.running_processes.lock().await;
-        if let Some(child) = processes.get_mut(serial) {
-            match child.try_wait() {
-                Ok(None) => true, // Still running
+        let mut sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(serial) {
+            match session.child.try_wait() {
+                Ok(None) => true, // Still active
                 _ => {
-                    processes.remove(serial);
+                    sessions.remove(serial);
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    pub async fn is_recording(&self, serial: &str) -> bool {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(serial) {
+            if !session.is_recording {
+                return false;
+            }
+            match session.child.try_wait() {
+                Ok(None) => true,
+                _ => {
+                    sessions.remove(serial);
                     false
                 }
             }
