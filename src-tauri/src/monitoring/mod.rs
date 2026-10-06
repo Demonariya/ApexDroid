@@ -2,6 +2,7 @@ use crate::adb::{AdbClient, DeviceConnectionStatus};
 use crate::devices::DeviceManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -19,6 +20,7 @@ pub struct DeviceChangeEvent {
 pub struct DeviceMonitor {
     adb: AdbClient,
     known_serials: Arc<RwLock<HashSet<String>>>,
+    is_running: Arc<AtomicBool>,
 }
 
 impl DeviceMonitor {
@@ -26,15 +28,26 @@ impl DeviceMonitor {
         Self {
             adb,
             known_serials: Arc::new(RwLock::new(HashSet::new())),
+            is_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
+    pub fn stop(&self) {
+        self.is_running.store(false, Ordering::SeqCst);
+    }
+
     pub fn start_polling(self: Arc<Self>, app_handle: AppHandle, interval_ms: u64) {
+        if self.is_running.swap(true, Ordering::SeqCst) {
+            info!("Device monitor is already running, skipping duplicate spawn");
+            return;
+        }
+
+        let is_running = self.is_running.clone();
         tokio::spawn(async move {
             info!("Device monitor polling loop started");
             let mut interval = tokio::time::interval(Duration::from_millis(interval_ms));
 
-            loop {
+            while is_running.load(Ordering::SeqCst) {
                 interval.tick().await;
 
                 match self.adb.list_devices().await {

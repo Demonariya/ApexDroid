@@ -173,9 +173,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-3 border-t border-neutral-800/70 bg-[#090b10] text-[11px] text-neutral-400 flex items-center justify-between">
         <div className="flex items-center gap-1.5">
           <div className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-          <span className="font-mono text-[10px]">ADB 1.0.41 (5037)</span>
+          <span className="font-mono text-[10px]">
+            {typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
+              ? 'Tauri Native (Port 5037)'
+              : 'Web Demo Engine'}
+          </span>
         </div>
-        <span className="text-[10px] text-neutral-400 font-mono">Tauri v2 · x64</span>
+        <span className="text-[10px] text-neutral-400 font-mono">v1.0 · x64</span>
       </div>
     </aside>
   );

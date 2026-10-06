@@ -186,6 +186,82 @@ impl AdbClient {
 
         Ok("Reboot signal sent successfully".to_string())
     }
+
+    pub async fn send_key_event(&self, serial: &str, keycode: &str) -> AppResult<()> {
+        validate_serial(serial)?;
+        validate_identifier(keycode)?;
+
+        let bin = self.get_adb_binary();
+        let output = Command::new(&bin)
+            .args(["-s", serial, "shell", "input", "keyevent", keycode])
+            .output()
+            .await
+            .map_err(|e| AppError::Adb(format!("Failed to send keyevent: {}", e)))?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::Adb(format!("Key event {} failed: {}", keycode, err)));
+        }
+        Ok(())
+    }
+
+    pub async fn take_screenshot(&self, serial: &str, destination_path: &str) -> AppResult<()> {
+        validate_serial(serial)?;
+        let bin = self.get_adb_binary();
+        let remote_tmp = "/sdcard/apexdroid_screenshot_tmp.png";
+
+        // Step 1: capture on device
+        let cap = Command::new(&bin)
+            .args(["-s", serial, "shell", "screencap", "-p", remote_tmp])
+            .output()
+            .await
+            .map_err(|e| AppError::Adb(format!("Screencap failed: {}", e)))?;
+
+        if !cap.status.success() {
+            let err = String::from_utf8_lossy(&cap.stderr);
+            return Err(AppError::Adb(format!("Screenshot capture failed: {}", err)));
+        }
+
+        // Step 2: pull to destination
+        let pull = Command::new(&bin)
+            .args(["-s", serial, "pull", remote_tmp, destination_path])
+            .output()
+            .await
+            .map_err(|e| AppError::Adb(format!("Pull screenshot failed: {}", e)))?;
+
+        // Step 3: clean up remote temp file (best-effort)
+        let _ = Command::new(&bin)
+            .args(["-s", serial, "shell", "rm", "-f", remote_tmp])
+            .output()
+            .await;
+
+        if !pull.status.success() {
+            let err = String::from_utf8_lossy(&pull.stderr);
+            return Err(AppError::Adb(format!("Failed to pull screenshot file: {}", err)));
+        }
+
+        Ok(())
+    }
+}
+
+pub fn validate_serial(serial: &str) -> AppResult<()> {
+    if serial.is_empty()
+        || serial.len() > 128
+        || serial.chars().any(|c| c.is_whitespace() || c == ';' || c == '&' || c == '|' || c == '$' || c == '`' || c == '"' || c == '\'')
+    {
+        return Err(AppError::Validation(format!("Invalid device serial: '{}'", serial)));
+    }
+    Ok(())
+}
+
+pub fn validate_identifier(ident: &str) -> AppResult<()> {
+    if ident.is_empty()
+        || ident.len() > 128
+        || !ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    {
+        return Err(AppError::Validation(format!("Invalid identifier: '{}'", ident)));
+    }
+    Ok(())
 }
 
 pub fn parse_adb_version(output: &str, path: &str) -> AdbVersion {

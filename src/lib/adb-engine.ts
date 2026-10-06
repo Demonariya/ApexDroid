@@ -587,6 +587,49 @@ class SimulatedAdbEngine {
     return !!this.isMirroringMap[serial];
   }
 
+  async sendKeyEvent(serial: string, keycode: string): Promise<void> {
+    this.addLog('INFO', 'input', `Keyevent ${keycode} dispatched to ${serial}`, serial);
+  }
+
+  async takeScreenshot(serial: string, destinationPath: string): Promise<void> {
+    this.addLog('INFO', 'screencap', `Frame buffer dumped to ${destinationPath}`, serial);
+  }
+
+  async runBackup(plan: any): Promise<any> {
+    this.addLog('INFO', 'backup', `Created manifest in ${plan.destination_dir} for ${plan.serial}`, plan.serial);
+    return {
+      format_version: '1.0.0',
+      timestamp_iso: new Date().toISOString(),
+      device_serial: plan.serial,
+      total_bytes: 48920192,
+      total_files: plan.specific_packages?.length || 3,
+      security_disclaimer: 'Standard ADB user-level backup.',
+      items: [
+        {
+          relative_path: 'apks/com.whatsapp.apk',
+          size_bytes: 18400000,
+          sha256_hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+          item_type: 'apk',
+          package_name: 'com.whatsapp',
+        },
+      ],
+    };
+  }
+
+  async restoreBackup(serial: string, backupDir: string): Promise<any> {
+    this.addLog('INFO', 'restore', `Restored backup from ${backupDir} to ${serial}`, serial);
+    return {
+      successful_items: 2,
+      failed_items: 0,
+      total_items: 2,
+      details: ['Installed APK: com.whatsapp.apk', 'Restored user documents'],
+    };
+  }
+
+  async cancelBackup(): Promise<void> {
+    this.addLog('WARN', 'backup', 'Backup task cancelled');
+  }
+
   async getLogs(): Promise<LogMessage[]> {
     return [...this.logs];
   }

@@ -194,6 +194,60 @@ pub async fn stop_scrcpy(
 }
 
 #[tauri::command]
+pub async fn send_key_event(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+    keycode: String,
+) -> Result<(), String> {
+    state.adb_client.send_key_event(&serial, &keycode).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn take_screenshot(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+    destination_path: String,
+) -> Result<(), String> {
+    state.logs.push("INFO", "screenshot", &format!("Capturing screenshot for {} -> {}", serial, destination_path), Some(&serial));
+    state.adb_client.take_screenshot(&serial, &destination_path).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn is_scrcpy_running(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+) -> Result<bool, String> {
+    Ok(state.scrcpy_manager.is_mirroring(&serial).await)
+}
+
+#[tauri::command]
+pub async fn run_backup(
+    state: State<'_, Arc<AppState>>,
+    plan: crate::backup::BackupPlan,
+) -> Result<crate::backup::BackupManifest, String> {
+    state.logs.push("INFO", "backup", &format!("Starting backup for {} to {}", plan.serial, plan.destination_dir), Some(&plan.serial));
+    state.backup_manager.run_backup(plan, |_progress| {}).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn restore_backup(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+    backup_dir: String,
+) -> Result<crate::backup::RestoreResult, String> {
+    state.logs.push("INFO", "restore", &format!("Restoring backup for {} from {}", serial, backup_dir), Some(&serial));
+    state.backup_manager.restore_backup(&serial, &backup_dir).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_backup(
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.backup_manager.cancel();
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_logs(state: State<'_, Arc<AppState>>) -> Result<Vec<LogMessage>, String> {
     Ok(state.logs.get_all())
 }

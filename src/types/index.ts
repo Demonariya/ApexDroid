@@ -128,6 +128,49 @@ export interface AppSettings {
   log_level: string;
 }
 
+export interface BackupPlan {
+  serial: string;
+  destination_dir: string;
+  include_apk: boolean;
+  include_shared_storage: boolean;
+  include_system_settings: boolean;
+  specific_packages: string[];
+}
+
+export interface BackupProgress {
+  phase: string;
+  current_item: string;
+  items_completed: number;
+  total_items: number;
+  percentage: number;
+  bytes_transferred: number;
+}
+
+export interface BackupManifestItem {
+  relative_path: string;
+  size_bytes: number;
+  sha256_hash: string;
+  item_type: string;
+  package_name?: string;
+}
+
+export interface BackupManifest {
+  format_version: string;
+  timestamp_iso: string;
+  device_serial: string;
+  total_bytes: number;
+  total_files: number;
+  security_disclaimer: string;
+  items: BackupManifestItem[];
+}
+
+export interface RestoreResult {
+  successful_items: number;
+  failed_items: number;
+  total_items: number;
+  details: string[];
+}
+
 export interface ToastNotification {
   id: string;
   type: 'info' | 'success' | 'warning' | 'error';

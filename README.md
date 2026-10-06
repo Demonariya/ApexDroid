@@ -21,7 +21,7 @@
 - **Package Manager (APK)**: Sideload APKs via drag-and-drop, filter by User (`-3`), System (`-s`), and Disabled packages. Force stop, clear app data, disable, and launch apps.
 - **Scrcpy Screen Mirroring**: Integrated mirror session with touch navigation, soft keys (Home, Back, Recents), volume toggles, live H.264 video recording, and direct PNG framebuffer snapshots.
 - **Interactive ADB Terminal**: Embedded shell console with command history recall (Up/Down arrow keys), quick presets (`getprop`, `dumpsys battery`, `logcat`, `df -h`), copy buffer, and safety confirmation for destructive commands.
-- **Backup & Restore Wizard**: Offline archive creation for APKs, internal storage media, and system preferences with progress and speed counters.
+- **Backup & Restore Pipeline**: Genuine offline backup of user APKs and storage partitions with SHA-256 file manifest verification, restore installer, and accurate Android permission boundary disclosures.
 - **Structured Tracing Logs**: High-density log viewer powered by Rust `tracing` with level filtering (INFO, WARN, ERROR, DEBUG) and export support.
 - **Bilingual & RTL**: Seamless toggle between English and **Persian (فارسی)** with complete RTL layout mirroring and `Vazirmatn` typography.
 
@@ -188,9 +188,11 @@ The output executable will be created in `src-tauri/target/release/bundle/nsis/`
    - دکمه‌های آماده برای دستورات پرکاربرد (`getprop`، `dumpsys battery`، `pm list`، `df -h`، `logcat`).
    - کپی خروجی در کلیپ‌بورد، پاکسازی صفحه و پنجره تایید برای دستورات مخرب.
 
-8. **دستیار پشتیبان‌گیری و بازیابی (Backup & Restore)**:
-   - پشتیبان‌گیری آفلاین از برنامه‌ها، عکس‌ها، اسناد و تنظیمات دستگاه.
-   - محاسبه خودکار حجم تقریبی و نمایش نوار پیشرفت با سرعت انتقال مگابایت بر ثانیه.
+8. **دستیار پشتیبان‌گیری و بازیابی واقعی (Backup & Restore)**:
+   - پشتیبان‌گیری آفلاین واقعی از فایل‌های APK و رسانه‌های حافظه دستگاه با استخراج مستقیم ADB.
+   - ایجاد شناسه و مانیفست کامل امنیتی با تاییدیه هش جامع SHA-256 برای تضمین سلامت فایل‌ها.
+   - شفاف‌سازی محدودیت‌های سیستمی اندروید (عدم ادعای نادرست دسترسی به سکتورهای محرمانه سیستمی بدون روت).
+   - مسیر بازگردانی و نصب مجدد برنامه‌ها و رسانه‌ها با گزارش آمار واقعی اقلام موفق و ناموفق.
 
 9. **لاگ‌های ساختاریافته Tracing**:
    - مشاهده لحظه‌ای رخدادهای سیستم با سطوح INFO، WARN، ERROR و DEBUG.
