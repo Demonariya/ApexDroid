@@ -114,13 +114,13 @@ npm install
 npm run dev
 
 # Native Tauri Desktop mode:
-npx tauri dev
+npm run tauri:dev
 ```
 
 #### 3. Build Production Executable (Windows x64)
 ```bash
 # Builds frontend assets and produces Windows installer / standalone binary
-npx tauri build
+npm run tauri:build
 ```
 The output executable will be created in `src-tauri/target/release/bundle/nsis/` or `bundle/msi/`.
 
@@ -231,10 +231,10 @@ npm install
 npm run dev
 
 # ۳. اجرای نرم‌افزار به صورت دسکتاپ نیتیو (Tauri):
-npx tauri dev
+npm run tauri:dev
 
 # ۴. خروجی نهایی برای ویندوز (تولید فایل exe و نصاب):
-npx tauri build
+npm run tauri:build
 ```
 
 ---

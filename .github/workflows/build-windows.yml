@@ -57,9 +57,13 @@ jobs:
         run: |
           cargo test --manifest-path src-tauri/Cargo.toml --verbose
 
+      - name: Generate all required Tauri icons from SVG
+        run: |
+          npm run tauri -- icon src-tauri/icons/icon.svg
+
       - name: Build Tauri native desktop executable & bundle installers
         run: |
-          npx tauri build --verbose
+          npm run tauri:build -- --verbose
 
       - name: Verify and stage build artifacts
         shell: pwsh
