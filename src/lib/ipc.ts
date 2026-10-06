@@ -218,6 +218,18 @@ export const ipc = {
     return adbEngine.setAppEnabled(serial, packageName, enabled);
   },
 
+  async launchApp(serial: string, packageName: string): Promise<void> {
+    if (isTauriEnvironment()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        return await invoke<void>('launch_app', { serial, packageName });
+      } catch (err) {
+        console.warn('Tauri invoke error, falling back to engine:', err);
+      }
+    }
+    return adbEngine.launchApp(serial, packageName);
+  },
+
   async startScrcpy(serial: string, config: ScrcpyConfig): Promise<boolean> {
     if (isTauriEnvironment()) {
       try {
