@@ -7,6 +7,7 @@ export const translations = {
     dashboard: 'Dashboard',
     devices: 'Devices',
     files: 'File Manager',
+    fileManager: 'File Manager',
     apps: 'Applications',
     mirror: 'Screen Mirror',
     terminal: 'ADB Terminal',
@@ -55,6 +56,7 @@ export const translations = {
     usb: 'USB High-Speed',
     wireless: 'Wi-Fi 6 Debugging',
     status: 'Status',
+    state: 'State',
     battery: 'Battery',
     storage: 'Storage',
     resolution: 'Resolution',
@@ -163,6 +165,9 @@ export const translations = {
     toolDeviceReportDesc: 'Export full hardware and software audit as Markdown/JSON.',
 
     // Backup & Restore
+    backupRestore: 'Backup & Restore',
+    createBackup: 'Create Backup',
+    restoreBackup: 'Restore Backup',
     backupWizard: 'Device Backup & Restore',
     backupSelectItems: 'Select Items to Backup',
     backupApps: 'User Installed Applications',
@@ -193,6 +198,7 @@ export const translations = {
     dashboard: 'داشبورد',
     devices: 'دستگاه‌ها',
     files: 'مدیریت فایل',
+    fileManager: 'مدیریت فایل',
     apps: 'برنامه‌ها',
     mirror: 'انتقال تصویر (Scrcpy)',
     terminal: 'ترمینال ADB',
@@ -241,6 +247,7 @@ export const translations = {
     usb: 'اتصال USB پرسرعت',
     wireless: 'دیباگ بی‌سیم Wi-Fi',
     status: 'وضعیت',
+    state: 'وضعیت',
     battery: 'باتری',
     storage: 'حافظه داخلی',
     resolution: 'رزولوشن',
@@ -349,6 +356,9 @@ export const translations = {
     toolDeviceReportDesc: 'خروجی گزارش مشخصات کامل دستگاه با فرمت Markdown یا JSON.',
 
     // Backup & Restore
+    backupRestore: 'پشتیبان‌گیری و بازیابی',
+    createBackup: 'ایجاد نسخه پشتیبان',
+    restoreBackup: 'بازیابی اطلاعات',
     backupWizard: 'دستیار پشتیبان‌گیری و بازیابی',
     backupSelectItems: 'انتخاب بخش‌های مورد نظر برای بکاپ',
     backupApps: 'برنامه‌های نصب شده توسط کاربر',

@@ -218,8 +218,8 @@ export default function App() {
   };
 
   const handleToggleLanguage = async () => {
-    const next = language === 'en' ? 'fa' : 'en';
-    const updated = { ...settings, language: next };
+    const next: Language = language === 'en' ? 'fa' : 'en';
+    const updated: AppSettings = { ...settings, language: next };
     setLanguage(next);
     setSettings(updated);
     try {
@@ -323,10 +323,11 @@ export default function App() {
               selectedDevice={selectedDevice}
               onSelectDevice={setSelectedDevice}
               language={language}
-              onRefreshDevices={handleRefreshDevices}
-              onOpenWirelessModal={() => setShowWirelessModal(true)}
-              onRebootDevice={handleRebootDevice}
-              onNotify={addToast}
+              onRefresh={handleRefreshDevices}
+              isRefreshing={isRefreshing}
+              onConnectWireless={handleConnectWireless}
+              onPairWireless={handlePairWireless}
+              onRebootDevice={executeReboot}
             />
           )}
 
@@ -419,6 +420,7 @@ export default function App() {
             <SettingsView
               settings={settings}
               language={language}
+              onToggleLanguage={handleToggleLanguage}
               onSaveSettings={async (updated) => {
                 setSettings(updated);
                 setLanguage(updated.language);
@@ -435,14 +437,14 @@ export default function App() {
       <CommandPalette
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
-        devices={devices}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
         selectedDevice={selectedDevice}
-        onSelectDevice={setSelectedDevice}
-        onNavigateTab={setActiveTab}
         language={language}
+        onToggleLanguage={handleToggleLanguage}
+        onRestartAdb={handleRestartAdb}
         onTakeScreenshot={handleTakeScreenshot}
         onRebootDevice={handleRebootDevice}
-        onRestartAdb={handleRestartAdb}
       />
 
       <WirelessConnectModal

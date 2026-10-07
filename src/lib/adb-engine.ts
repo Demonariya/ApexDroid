@@ -592,7 +592,8 @@ class SimulatedAdbEngine {
   }
 
   async pullFile(serial: string, remotePath: string, localPath: string): Promise<number> {
-    const entry = this.virtualFiles[serial]?.find((f) => f.path === remotePath);
+    const parent = remotePath.substring(0, remotePath.lastIndexOf('/')) || '/sdcard';
+    const entry = this.fs[parent]?.find((f) => f.path === remotePath);
     const size = entry ? entry.size_bytes : 10240;
     this.addLog('INFO', 'fs', `Pulled ${remotePath} -> ${localPath} (${size} bytes)`, serial);
     return size;
@@ -600,13 +601,14 @@ class SimulatedAdbEngine {
 
   async pushFile(serial: string, localPath: string, remotePath: string): Promise<number> {
     const fileName = localPath.split(/[/\\]/).pop() || 'uploaded_file';
-    if (!this.virtualFiles[serial]) {
-      this.virtualFiles[serial] = [];
+    const targetDir = remotePath.replace(/\/$/, '') || '/sdcard';
+    if (!this.fs[targetDir]) {
+      this.fs[targetDir] = [];
     }
     const size = 25600;
-    this.virtualFiles[serial].push({
+    this.fs[targetDir].push({
       name: fileName,
-      path: `${remotePath.replace(/\/$/, '')}/${fileName}`,
+      path: `${targetDir}/${fileName}`,
       file_type: 'File',
       size_bytes: size,
       permissions: '-rw-rw----',
@@ -617,7 +619,7 @@ class SimulatedAdbEngine {
       is_hidden: false,
       extension: fileName.split('.').pop(),
     });
-    this.addLog('INFO', 'fs', `Pushed ${localPath} -> ${remotePath}/${fileName} (${size} bytes)`, serial);
+    this.addLog('INFO', 'fs', `Pushed ${localPath} -> ${targetDir}/${fileName} (${size} bytes)`, serial);
     return size;
   }
 
