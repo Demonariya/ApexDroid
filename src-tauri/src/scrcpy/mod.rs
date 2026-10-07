@@ -212,4 +212,13 @@ impl ScrcpyManager {
             false
         }
     }
+
+    pub fn stop_all(&self) {
+        if let Ok(mut sessions) = self.sessions.try_lock() {
+            for (serial, mut session) in sessions.drain() {
+                info!(serial = %serial, "Terminating active scrcpy session on shutdown");
+                let _ = session.child.start_kill();
+            }
+        }
+    }
 }

@@ -30,9 +30,8 @@ pub fn run() {
             let app_state = Arc::new(AppState::new(config_dir));
             app.manage(app_state.clone());
 
-            let monitor = Arc::new(monitoring::DeviceMonitor::new(app_state.adb_client.clone()));
             let poll_ms = app_state.settings.read().polling_interval_ms;
-            monitor.start_polling(app.handle().clone(), poll_ms);
+            app_state.device_monitor.start_polling(app.handle().clone(), poll_ms);
 
             Ok(())
         })
@@ -74,6 +73,15 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running ApexDroid desktop application");
+        .build(tauri::generate_context!())
+        .expect("error while building ApexDroid desktop application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. } = event {
+                if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                    tracing::info!("ApexDroid exiting: cleanly stopping device monitor and cleaning up sessions");
+                    state.device_monitor.stop();
+                    state.scrcpy_manager.stop_all();
+                }
+            }
+        });
 }

@@ -4,6 +4,7 @@ use crate::devices::DeviceManager;
 use crate::errors::{AppError, AppResult};
 use crate::filesystem::FilesystemManager;
 use crate::logging::LogRingBuffer;
+use crate::monitoring::DeviceMonitor;
 use crate::packages::PackageManager;
 use crate::scrcpy::ScrcpyManager;
 use parking_lot::RwLock;
@@ -46,6 +47,7 @@ pub struct AppState {
     pub settings: Arc<RwLock<AppSettings>>,
     pub adb_client: Arc<AdbClient>,
     pub device_manager: Arc<DeviceManager>,
+    pub device_monitor: Arc<DeviceMonitor>,
     pub filesystem_manager: Arc<FilesystemManager>,
     pub package_manager: Arc<PackageManager>,
     pub scrcpy_manager: Arc<ScrcpyManager>,
@@ -76,6 +78,7 @@ impl AppState {
         let settings = Arc::new(RwLock::new(initial_settings));
         let adb = Arc::new(AdbClient::new(custom_adb));
         let dev_mgr = Arc::new(DeviceManager::new(adb.clone()));
+        let dev_monitor = Arc::new(DeviceMonitor::new(adb.clone()));
         let fs_mgr = Arc::new(FilesystemManager::new(adb.clone()));
         let pkg_mgr = Arc::new(PackageManager::new(adb.clone()));
         let scrcpy_mgr = Arc::new(ScrcpyManager::new(custom_scrcpy));
@@ -89,6 +92,7 @@ impl AppState {
             settings,
             adb_client: adb,
             device_manager: dev_mgr,
+            device_monitor: dev_monitor,
             filesystem_manager: fs_mgr,
             package_manager: pkg_mgr,
             scrcpy_manager: scrcpy_mgr,

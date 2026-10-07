@@ -133,8 +133,36 @@ export default function App() {
       }
     }, settings.polling_interval_ms || 2500);
 
-    return () => clearInterval(interval);
-  }, [loadDevices, loadLogs, loadSettings, settings.polling_interval_ms]);
+    // Real-time backend device connection events via Tauri Emitter
+    let unlistenConnect: (() => void) | undefined;
+    let unlistenDisconnect: (() => void) | undefined;
+
+    if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
+      import('@tauri-apps/api/event')
+        .then(({ listen }) => {
+          listen('device-connected', (event: any) => {
+            loadDevices();
+            addToast('info', 'Device Connected', `Device ${event.payload?.serial || ''} connected`);
+          }).then((unsub) => {
+            unlistenConnect = unsub;
+          });
+
+          listen('device-disconnected', (event: any) => {
+            loadDevices();
+            addToast('warning', 'Device Disconnected', `Device ${event.payload?.serial || ''} disconnected`);
+          }).then((unsub) => {
+            unlistenDisconnect = unsub;
+          });
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      clearInterval(interval);
+      if (unlistenConnect) unlistenConnect();
+      if (unlistenDisconnect) unlistenDisconnect();
+    };
+  }, [loadDevices, loadLogs, loadSettings, settings.polling_interval_ms, addToast]);
 
   // Actions
   const handleRefreshDevices = async () => {

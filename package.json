@@ -40,5 +40,12 @@
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
+  },
+  "optionalDependencies": {
+    "@rolldown/binding-win32-x64-msvc": "1.2.12"
+  },
+  "allowScripts": {
+    "esbuild": true,
+    "protobufjs": true
   }
 }

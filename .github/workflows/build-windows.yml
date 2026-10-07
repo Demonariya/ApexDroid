@@ -43,7 +43,17 @@ jobs:
 
       - name: Verify package-lock.json & clean dependency installation
         run: |
-          npm ci
+          npm ci --include=optional
+
+      - name: Ensure Windows native build tools & Rolldown binding
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "node_modules/@rolldown/binding-win32-x64-msvc")) {
+            Write-Host "Warning: @rolldown/binding-win32-x64-msvc missing after npm ci, installing explicitly..."
+            npm install --no-save @rolldown/binding-win32-x64-msvc@1.2.12
+          } else {
+            Write-Host "Verified @rolldown/binding-win32-x64-msvc is present."
+          }
 
       - name: Typecheck & lint frontend
         run: |
