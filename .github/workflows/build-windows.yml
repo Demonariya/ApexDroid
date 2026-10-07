@@ -45,14 +45,30 @@ jobs:
         run: |
           npm ci --include=optional
 
-      - name: Ensure Windows native build tools & Rolldown binding
+      - name: Ensure Windows native build tools & native bindings
         shell: pwsh
         run: |
-          if (-not (Test-Path "node_modules/@rolldown/binding-win32-x64-msvc")) {
-            Write-Host "Warning: @rolldown/binding-win32-x64-msvc missing after npm ci, installing explicitly..."
-            npm install --no-save @rolldown/binding-win32-x64-msvc@1.2.12
-          } else {
-            Write-Host "Verified @rolldown/binding-win32-x64-msvc is present."
+          $nativePackages = @(
+            @{ Name = "@rolldown/binding-win32-x64-msvc"; Version = "1.2.12"; Path = "node_modules/@rolldown/binding-win32-x64-msvc" },
+            @{ Name = "lightningcss-win32-x64-msvc"; Version = "1.32.0"; Path = "node_modules/lightningcss-win32-x64-msvc" },
+            @{ Name = "@tailwindcss/oxide-win32-x64-msvc"; Version = "4.3.3"; Path = "node_modules/@tailwindcss/oxide-win32-x64-msvc" }
+          )
+          foreach ($pkg in $nativePackages) {
+            if (-not (Test-Path $pkg.Path)) {
+              Write-Host "Warning: $($pkg.Name) missing after npm ci, installing explicitly..."
+              npm install --no-save "$($pkg.Name)@$($pkg.Version)"
+            } else {
+              Write-Host "Verified $($pkg.Name) is present."
+            }
+          }
+
+          # Ensure nested @tailwindcss/node lightningcss directory has direct access to the binary fallback
+          $nestedLightning = "node_modules/@tailwindcss/node/node_modules/lightningcss"
+          if (Test-Path $nestedLightning) {
+            $srcNode = "node_modules/lightningcss-win32-x64-msvc/lightningcss.win32-x64-msvc.node"
+            if (Test-Path $srcNode) {
+              Copy-Item -Path $srcNode -Destination "$nestedLightning/lightningcss.win32-x64-msvc.node" -Force -ErrorAction SilentlyContinue
+            }
           }
 
       - name: Typecheck & lint frontend
