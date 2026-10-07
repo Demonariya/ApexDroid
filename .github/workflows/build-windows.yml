@@ -61,45 +61,110 @@ jobs:
         run: |
           npm run tauri -- icon src-tauri/icons/icon.svg
 
+      - name: Setup Windows packaging dependencies (WiX for MSI installer)
+        shell: pwsh
+        run: |
+          # WiX Toolset is required by Tauri to bundle .msi packages on Windows
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            $wixLocations = @(
+              "C:\Program Files (x86)\WiX Toolset v3.11\bin",
+              "C:\Program Files\WiX Toolset v3.11\bin",
+              "C:\Program Files (x86)\WiX Toolset v3.14\bin"
+            )
+            $found = $false
+            foreach ($loc in $wixLocations) {
+              if (Test-Path $loc) {
+                Write-Host "Found existing WiX installation at $loc, adding to GITHUB_PATH"
+                echo "$loc" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+                $found = $true
+                break
+              }
+            }
+            if (-not $found) {
+              Write-Host "Installing WiX Toolset v3 via Chocolatey..."
+              choco install wixtoolset -y --no-progress
+              $chocoWix = "C:\Program Files (x86)\WiX Toolset v3.11\bin"
+              if (Test-Path $chocoWix) {
+                echo "$chocoWix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              }
+            }
+          }
+
       - name: Build Tauri native desktop executable & bundle installers
         run: |
           npm run tauri:build -- --verbose
+        env:
+          RUST_BACKTRACE: 1
+          CARGO_TERM_COLOR: always
 
       - name: Verify and stage build artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts
 
-          $exePath = "src-tauri/target/release/apexdroid-desktop.exe"
-          if (-not (Test-Path $exePath)) {
-            Write-Error "CRITICAL: Expected executable not found at $exePath"
+          # Discover the compiled executable across target directories
+          $candidatePaths = @(
+            "src-tauri/target/release/apexdroid-desktop.exe",
+            "src-tauri/target/release/ApexDroid.exe",
+            "src-tauri/target/x86_64-pc-windows-msvc/release/apexdroid-desktop.exe",
+            "src-tauri/target/x86_64-pc-windows-msvc/release/ApexDroid.exe"
+          )
+
+          $foundExe = $null
+          foreach ($p in $candidatePaths) {
+            if (Test-Path $p) {
+              $foundExe = (Get-Item $p).FullName
+              break
+            }
+          }
+
+          if (-not $foundExe) {
+            # Search recursively in src-tauri/target for the main release executable
+            $search = Get-ChildItem -Path "src-tauri/target" -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -notmatch "bundle" -and $_.FullName -notmatch "deps" -and $_.FullName -notmatch "build" -and $_.FullName -notmatch "incremental" -and $_.Length -gt 1000000 }
+            if ($search) {
+              $foundExe = $search[0].FullName
+            }
+          }
+
+          if (-not $foundExe) {
+            Write-Error "CRITICAL: Expected executable not found in src-tauri/target release directory."
+            Get-ChildItem -Path "src-tauri/target" -Recurse -Depth 3 | Select-Object FullName, Length
             exit 1
           }
 
-          $exeItem = Get-Item $exePath
+          $exeItem = Get-Item $foundExe
           if ($exeItem.Length -le 1000) {
             Write-Error "CRITICAL: Generated executable is empty or suspiciously small: $($exeItem.Length) bytes"
             exit 1
           }
 
-          Write-Host "Verified valid executable: $exePath ($($exeItem.Length) bytes)"
-          Copy-Item -Path $exePath -Destination "artifacts/ApexDroid.exe" -Force
+          Write-Host "Verified valid executable: $foundExe ($($exeItem.Length) bytes)"
+          Copy-Item -Path $foundExe -Destination "artifacts/ApexDroid.exe" -Force
+          Copy-Item -Path $foundExe -Destination "artifacts/apexdroid-desktop.exe" -Force
 
           # Stage NSIS installer if generated
-          $nsisFiles = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue
+          $nsisFiles = Get-ChildItem -Path "src-tauri/target" -Filter "*setup*.exe" -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "bundle[\\/]nsis" }
+          if (-not $nsisFiles) {
+            $nsisFiles = Get-ChildItem -Path "src-tauri/target" -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match "bundle[\\/]nsis" }
+          }
           foreach ($file in $nsisFiles) {
             Write-Host "Found NSIS installer: $($file.FullName) ($($file.Length) bytes)"
             Copy-Item -Path $file.FullName -Destination "artifacts/$($file.Name)" -Force
           }
 
           # Stage MSI installer if generated
-          $msiFiles = Get-ChildItem -Path "src-tauri/target/release/bundle/msi" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue
+          $msiFiles = Get-ChildItem -Path "src-tauri/target" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "bundle[\\/]msi" }
           foreach ($file in $msiFiles) {
             Write-Host "Found MSI installer: $($file.FullName) ($($file.Length) bytes)"
             Copy-Item -Path $file.FullName -Destination "artifacts/$($file.Name)" -Force
           }
 
-          Get-ChildItem -Path artifacts
+          Write-Host "=== Staged Artifacts in artifacts/ ==="
+          Get-ChildItem -Path artifacts | Format-Table Name, Length, LastWriteTime
 
       - name: Upload Windows x64 Build Artifacts
         uses: actions/upload-artifact@v4
