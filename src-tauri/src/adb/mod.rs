@@ -3,7 +3,7 @@ use parking_lot::RwLock;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::process::Command;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AdbVersion {

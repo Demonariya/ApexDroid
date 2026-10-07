@@ -1,9 +1,9 @@
 use crate::adb::{AdbClient, DeviceConnectionStatus, RawAdbDevice};
-use crate::errors::{AppError, AppResult};
+use crate::errors::AppResult;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatteryInfo {

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::process::Child;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrcpyConfig {

@@ -33,8 +33,9 @@ impl LogRingBuffer {
             list.pop_front();
         }
         let now = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        let next_id = format!("{}-{}", now, list.len());
         list.push_back(LogMessage {
-            id: format!("{}-{}", now, list.len()),
+            id: next_id,
             timestamp: now,
             level: level.to_string(),
             target: target.to_string(),

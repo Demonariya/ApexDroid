@@ -1,6 +1,5 @@
-use crate::adb::{AdbVersion, RawAdbDevice};
+use crate::adb::AdbVersion;
 use crate::devices::DeviceDetails;
-use crate::errors::AppError;
 use crate::filesystem::FileEntry;
 use crate::logging::LogMessage;
 use crate::packages::AppPackage;
