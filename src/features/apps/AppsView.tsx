@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Boxes,
   Play,
@@ -52,6 +52,7 @@ export const AppsView: React.FC<AppsViewProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const iconRequestsRef = useRef<Set<string>>(new Set());
 
   // Confirmation dialogs
   const [uninstallTarget, setUninstallTarget] = useState<AppPackage | null>(null);
@@ -75,6 +76,59 @@ export const AppsView: React.FC<AppsViewProps> = ({
   useEffect(() => {
     fetchPackages();
   }, [selectedDevice?.serial, filter]);
+
+  useEffect(() => {
+    iconRequestsRef.current.clear();
+  }, [selectedDevice?.serial]);
+
+  useEffect(() => {
+    if (!selectedDevice || packages.length === 0) return;
+
+    let cancelled = false;
+    const queue = packages.filter(
+      (pkg) => !pkg.icon_base64 && !iconRequestsRef.current.has(pkg.package_name)
+    );
+
+    queue.forEach((pkg) => iconRequestsRef.current.add(pkg.package_name));
+    if (queue.length === 0) return;
+
+    let cursor = 0;
+    const worker = async () => {
+      while (!cancelled) {
+        const index = cursor++;
+        if (index >= queue.length) return;
+        const pkg = queue[index];
+
+        try {
+          const icon = await ipc.getAppIcon(
+            selectedDevice.serial,
+            pkg.package_name,
+            pkg.apk_path
+          );
+
+          if (!cancelled && icon) {
+            setPackages((current) =>
+              current.map((item) =>
+                item.package_name === pkg.package_name
+                  ? { ...item, icon_base64: icon }
+                  : item
+              )
+            );
+          }
+        } catch {
+          // Some packages are not readable through adb; retain the fallback icon.
+        }
+      }
+    };
+
+    void Promise.all(
+      Array.from({ length: Math.min(4, queue.length) }, () => worker())
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [packages, selectedDevice?.serial]);
 
   const handleLaunch = async (pkg: AppPackage) => {
     if (!selectedDevice) return;
@@ -338,8 +392,20 @@ export const AppsView: React.FC<AppsViewProps> = ({
                   <tr key={pkg.package_name} className="hover:bg-neutral-900/40 transition-colors">
                     <td className="py-2.5 px-4">
                       <div className="flex items-center gap-2.5">
-                        <div className="w-7 h-7 rounded-lg bg-neutral-800/80 border border-neutral-700 flex items-center justify-center shrink-0">
-                          <Boxes className="w-3.5 h-3.5 text-cyan-400" />
+                        <div className="w-7 h-7 rounded-lg bg-neutral-800/80 border border-neutral-700 flex items-center justify-center shrink-0 overflow-hidden">
+                          {pkg.icon_base64 ? (
+                            <img
+                              src={pkg.icon_base64}
+                              alt=""
+                              className="w-full h-full object-cover"
+                              loading="lazy"
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none';
+                              }}
+                            />
+                          ) : (
+                            <Boxes className="w-3.5 h-3.5 text-cyan-400" />
+                          )}
                         </div>
                         <span className="font-semibold text-neutral-200">{pkg.display_name}</span>
                       </div>
