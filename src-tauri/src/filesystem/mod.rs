@@ -49,19 +49,27 @@ impl FilesystemManager {
     }
 
     pub async fn list_directory(&self, serial: &str, path: &str) -> AppResult<Vec<FileEntry>> {
-        let clean_path = if path.trim().is_empty() { "/sdcard" } else { path.trim() };
-        let escaped = escape_shell_arg(clean_path);
-        let cmd = format!("ls -la {}", escaped);
-        let output = self.adb.run_shell(serial, &cmd).await?;
+        let mut target_path = if path.trim().is_empty() { "/storage/emulated/0" } else { path.trim() };
+        let mut escaped = escape_shell_arg(target_path);
+        let mut cmd = format!("ls -la {}", escaped);
+        let mut output = self.adb.run_shell(serial, &cmd).await?;
+
+        // Fallback to /sdcard alias if default canonical /storage/emulated/0 does not exist
+        if path.trim().is_empty() && output.contains("No such file or directory") {
+            target_path = "/sdcard";
+            escaped = escape_shell_arg(target_path);
+            cmd = format!("ls -la {}", escaped);
+            output = self.adb.run_shell(serial, &cmd).await?;
+        }
 
         if output.contains("No such file or directory") {
-            return Err(AppError::Filesystem(format!("Directory does not exist: {}", clean_path)));
+            return Err(AppError::Filesystem(format!("Directory does not exist: {}", target_path)));
         }
         if output.contains("Permission denied") {
-            return Err(AppError::Filesystem(format!("Permission denied reading directory: {}", clean_path)));
+            return Err(AppError::Filesystem(format!("Permission denied reading directory: {}", target_path)));
         }
 
-        Ok(parse_ls_output(&output, clean_path))
+        Ok(parse_ls_output(&output, target_path))
     }
 
     pub async fn create_directory(&self, serial: &str, path: &str) -> AppResult<()> {
@@ -352,5 +360,13 @@ drwxrwx--x root sdcard_rw 4096 2024-03-12 14:30 DCIM
         assert_eq!(entries_no_links[1].name, "notes.txt");
         assert_eq!(entries_no_links[1].file_type, FileType::File);
         assert_eq!(entries_no_links[1].size_bytes, 500);
+
+        // Test canonical Android shared storage path /storage/emulated/0
+        let canonical_entries = parse_ls_output(sample, "/storage/emulated/0");
+        assert_eq!(canonical_entries.len(), 4);
+        assert_eq!(canonical_entries[0].path, "/storage/emulated/0/DCIM");
+        let canonical_link = canonical_entries.iter().find(|e| e.name == "link_target").unwrap();
+        assert_eq!(canonical_link.file_type, FileType::Symlink);
+        assert_eq!(canonical_link.path, "/storage/emulated/0/link_target");
     }
 }

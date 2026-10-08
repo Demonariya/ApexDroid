@@ -53,13 +53,15 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
   onRenameFile,
   onNotify,
 }) => {
-  const [currentPath, setCurrentPath] = useState('/sdcard');
+  const [currentPath, setCurrentPath] = useState('/storage/emulated/0');
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isTransferring, setIsTransferring] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedEntry, setSelectedEntry] = useState<FileEntry | null>(null);
+  const [isEditingPath, setIsEditingPath] = useState(false);
+  const [pathInputValue, setPathInputValue] = useState('/storage/emulated/0');
 
   // Modal states
   const [newFolderName, setNewFolderName] = useState('');
@@ -71,12 +73,14 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
   const t = translations[language];
 
   const quickNav = [
-    { name: 'Internal Storage', path: '/sdcard', icon: HardDrive },
-    { name: 'Downloads', path: '/sdcard/Download', icon: Download },
-    { name: 'DCIM (Camera)', path: '/sdcard/DCIM', icon: Image },
-    { name: 'Pictures', path: '/sdcard/Pictures', icon: Image },
-    { name: 'Documents', path: '/sdcard/Documents', icon: FileText },
-    { name: 'Music', path: '/sdcard/Music', icon: Music },
+    { name: 'Internal Storage', path: '/storage/emulated/0', icon: HardDrive },
+    { name: 'SDCard (Symlink)', path: '/sdcard', icon: HardDrive },
+    { name: 'Root (/)', path: '/', icon: FolderTree },
+    { name: 'Downloads', path: '/storage/emulated/0/Download', icon: Download },
+    { name: 'DCIM (Camera)', path: '/storage/emulated/0/DCIM', icon: Image },
+    { name: 'Pictures', path: '/storage/emulated/0/Pictures', icon: Image },
+    { name: 'Documents', path: '/storage/emulated/0/Documents', icon: FileText },
+    { name: 'Music', path: '/storage/emulated/0/Music', icon: Music },
   ];
 
   const fetchDirectory = async (path: string) => {
@@ -84,9 +88,11 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
     setIsLoading(true);
     setSelectedEntry(null);
     try {
-      const list = await onListFiles(selectedDevice.serial, path);
+      const cleanTarget = path.trim() || '/storage/emulated/0';
+      const list = await onListFiles(selectedDevice.serial, cleanTarget);
       setEntries(list);
-      setCurrentPath(path);
+      setCurrentPath(cleanTarget);
+      setPathInputValue(cleanTarget);
     } catch (err: any) {
       onNotify('error', 'Filesystem Error', err.message || 'Failed to list directory');
     } finally {
@@ -210,6 +216,7 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
 
   const getFileIcon = (entry: FileEntry) => {
     if (entry.file_type === 'Directory') return <Folder className="w-5 h-5 text-cyan-400 shrink-0" />;
+    if (entry.file_type === 'Symlink') return <FolderTree className="w-5 h-5 text-teal-400 shrink-0" />;
     const ext = entry.extension || '';
     if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg'].includes(ext)) {
       return <Image className="w-5 h-5 text-indigo-400 shrink-0" />;
@@ -288,39 +295,100 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
 
       {/* Path Breadcrumbs & Search Bar */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-[#0d121e] p-2.5 rounded-xl border border-neutral-800/80 shrink-0">
-        <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto text-xs py-1">
+        <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto text-xs py-1 flex-1">
           <button
             onClick={handleNavigateUp}
             disabled={currentPath === '/' || currentPath === ''}
-            className="p-1 rounded hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 disabled:opacity-30 disabled:hover:bg-transparent"
+            className="p-1 rounded hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 disabled:opacity-30 disabled:hover:bg-transparent shrink-0"
             title="Navigate Up"
           >
             <ArrowUp className="w-4 h-4" />
           </button>
 
-          <span className="text-neutral-500 font-mono">/</span>
-          {currentPath
-            .split('/')
-            .filter(Boolean)
-            .map((part, idx, arr) => {
-              const full = '/' + arr.slice(0, idx + 1).join('/');
-              const isLast = idx === arr.length - 1;
-              return (
-                <React.Fragment key={full}>
-                  <button
-                    onClick={() => handleNavigate(full)}
-                    className={`font-mono text-xs px-1.5 py-0.5 rounded transition-colors ${
-                      isLast
-                        ? 'text-cyan-400 font-semibold bg-cyan-950/30'
-                        : 'text-neutral-300 hover:text-white hover:bg-neutral-800'
-                    }`}
-                  >
-                    {part}
-                  </button>
-                  {!isLast && <ChevronRight className="w-3 h-3 text-neutral-600 shrink-0" />}
-                </React.Fragment>
-              );
-            })}
+          {isEditingPath ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                setIsEditingPath(false);
+                if (pathInputValue.trim()) {
+                  handleNavigate(pathInputValue.trim());
+                }
+              }}
+              className="flex items-center gap-1.5 flex-1 min-w-[220px]"
+            >
+              <input
+                type="text"
+                autoFocus
+                value={pathInputValue}
+                onChange={(e) => setPathInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setPathInputValue(currentPath);
+                    setIsEditingPath(false);
+                  }
+                }}
+                onBlur={() => {
+                  setIsEditingPath(false);
+                }}
+                placeholder="/storage/emulated/0"
+                className="bg-[#090b10] border border-cyan-500 rounded px-2.5 py-1 text-xs font-mono text-white focus:outline-none w-full"
+              />
+              <button
+                type="submit"
+                className="px-2 py-1 text-[11px] bg-cyan-600 hover:bg-cyan-500 text-white rounded font-medium shrink-0"
+              >
+                Go
+              </button>
+            </form>
+          ) : (
+            <div className="flex items-center gap-1 overflow-x-auto">
+              <button
+                onClick={() => handleNavigate('/')}
+                className={`font-mono text-xs px-1.5 py-0.5 rounded transition-colors ${
+                  currentPath === '/'
+                    ? 'text-cyan-400 font-semibold bg-cyan-950/30'
+                    : 'text-neutral-300 hover:text-white hover:bg-neutral-800'
+                }`}
+                title="Root (/)"
+              >
+                /
+              </button>
+
+              {currentPath
+                .split('/')
+                .filter(Boolean)
+                .map((part, idx, arr) => {
+                  const full = '/' + arr.slice(0, idx + 1).join('/');
+                  const isLast = idx === arr.length - 1;
+                  return (
+                    <React.Fragment key={full}>
+                      <ChevronRight className="w-3 h-3 text-neutral-600 shrink-0" />
+                      <button
+                        onClick={() => handleNavigate(full)}
+                        className={`font-mono text-xs px-1.5 py-0.5 rounded transition-colors ${
+                          isLast
+                            ? 'text-cyan-400 font-semibold bg-cyan-950/30'
+                            : 'text-neutral-300 hover:text-white hover:bg-neutral-800'
+                        }`}
+                      >
+                        {part}
+                      </button>
+                    </React.Fragment>
+                  );
+                })}
+
+              <button
+                onClick={() => {
+                  setPathInputValue(currentPath);
+                  setIsEditingPath(true);
+                }}
+                className="p-1 rounded hover:bg-neutral-800 text-neutral-400 hover:text-cyan-400 ml-1 shrink-0"
+                title="Edit path directly"
+              >
+                <Edit2 className="w-3 h-3" />
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
@@ -411,7 +479,7 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
                         key={entry.path}
                         onClick={() => setSelectedEntry(entry)}
                         onDoubleClick={() => {
-                          if (entry.file_type === 'Directory') {
+                          if (entry.file_type === 'Directory' || entry.file_type === 'Symlink') {
                             handleNavigate(entry.path);
                           } else {
                             handleDownloadFile(entry);
@@ -486,7 +554,7 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
                     key={entry.path}
                     onClick={() => setSelectedEntry(entry)}
                     onDoubleClick={() => {
-                      if (entry.file_type === 'Directory') {
+                      if (entry.file_type === 'Directory' || entry.file_type === 'Symlink') {
                         handleNavigate(entry.path);
                       } else {
                         handleDownloadFile(entry);

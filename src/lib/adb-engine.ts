@@ -221,30 +221,50 @@ const INITIAL_PACKAGES: AppPackage[] = [
 ];
 
 // In-memory Virtual Android Filesystem for testing / browser mode
+const CANONICAL_INTERNAL_STORAGE: FileEntry[] = [
+  { name: 'DCIM', path: '/storage/emulated/0/DCIM', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709840000, modified_str: '2024-03-07 16:40', is_hidden: false },
+  { name: 'Download', path: '/storage/emulated/0/Download', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709940000, modified_str: '2024-03-08 11:20', is_hidden: false },
+  { name: 'Documents', path: '/storage/emulated/0/Documents', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709540000, modified_str: '2024-03-04 09:15', is_hidden: false },
+  { name: 'Pictures', path: '/storage/emulated/0/Pictures', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709640000, modified_str: '2024-03-05 14:10', is_hidden: false },
+  { name: 'Music', path: '/storage/emulated/0/Music', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709440000, modified_str: '2024-03-03 18:22', is_hidden: false },
+  { name: 'Android', path: '/storage/emulated/0/Android', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709040000, modified_str: '2024-02-28 00:00', is_hidden: false },
+  { name: '.nomedia', path: '/storage/emulated/0/.nomedia', file_type: 'File', size_bytes: 0, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709040000, modified_str: '2024-02-28 00:00', is_hidden: true, extension: 'nomedia' },
+  { name: 'recovery_log.txt', path: '/storage/emulated/0/recovery_log.txt', file_type: 'File', size_bytes: 14200, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709840000, modified_str: '2024-03-07 18:02', is_hidden: false, extension: 'txt' },
+];
+
 const VIRTUAL_FS: Record<string, FileEntry[]> = {
-  '/sdcard': [
-    { name: 'DCIM', path: '/sdcard/DCIM', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709840000, modified_str: '2024-03-07 16:40', is_hidden: false },
-    { name: 'Download', path: '/sdcard/Download', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709940000, modified_str: '2024-03-08 11:20', is_hidden: false },
-    { name: 'Documents', path: '/sdcard/Documents', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709540000, modified_str: '2024-03-04 09:15', is_hidden: false },
-    { name: 'Pictures', path: '/sdcard/Pictures', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709640000, modified_str: '2024-03-05 14:10', is_hidden: false },
-    { name: 'Music', path: '/sdcard/Music', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709440000, modified_str: '2024-03-03 18:22', is_hidden: false },
-    { name: 'Android', path: '/sdcard/Android', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709040000, modified_str: '2024-02-28 00:00', is_hidden: false },
-    { name: '.nomedia', path: '/sdcard/.nomedia', file_type: 'File', size_bytes: 0, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709040000, modified_str: '2024-02-28 00:00', is_hidden: true, extension: 'nomedia' },
-    { name: 'recovery_log.txt', path: '/sdcard/recovery_log.txt', file_type: 'File', size_bytes: 14200, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709840000, modified_str: '2024-03-07 18:02', is_hidden: false, extension: 'txt' },
+  '/': [
+    { name: 'storage', path: '/storage', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxr-xr-x', owner: 'root', group: 'root', modified_epoch: 1709840000, modified_str: '2024-03-07 12:00', is_hidden: false },
+    { name: 'sdcard', path: '/sdcard', file_type: 'Symlink', size_bytes: 21, permissions: 'lrwxrwxrwx', owner: 'root', group: 'root', modified_epoch: 1709840000, modified_str: '2024-03-07 12:00', is_hidden: false },
+    { name: 'data', path: '/data', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'system', group: 'system', modified_epoch: 1709840000, modified_str: '2024-03-07 12:00', is_hidden: false },
+    { name: 'system', path: '/system', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxr-xr-x', owner: 'root', group: 'root', modified_epoch: 1709840000, modified_str: '2024-03-07 12:00', is_hidden: false },
+    { name: 'vendor', path: '/vendor', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxr-xr-x', owner: 'root', group: 'root', modified_epoch: 1709840000, modified_str: '2024-03-07 12:00', is_hidden: false },
   ],
-  '/sdcard/DCIM': [
-    { name: 'Camera', path: '/sdcard/DCIM/Camera', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709840000, modified_str: '2024-03-07 16:40', is_hidden: false },
-    { name: 'Screenshots', path: '/sdcard/DCIM/Screenshots', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709740000, modified_str: '2024-03-06 12:15', is_hidden: false },
+  '/storage': [
+    { name: 'emulated', path: '/storage/emulated', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxr-x--x', owner: 'root', group: 'everybody', modified_epoch: 1709840000, modified_str: '2024-03-07 12:00', is_hidden: false },
+    { name: 'self', path: '/storage/self', file_type: 'Directory', size_bytes: 4096, permissions: 'dr-xr-xr-x', owner: 'root', group: 'root', modified_epoch: 1709840000, modified_str: '2024-03-07 12:00', is_hidden: false },
   ],
-  '/sdcard/DCIM/Camera': [
-    { name: '20240307_164012.jpg', path: '/sdcard/DCIM/Camera/20240307_164012.jpg', file_type: 'File', size_bytes: 8420000, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709840000, modified_str: '2024-03-07 16:40', is_hidden: false, extension: 'jpg' },
-    { name: '20240307_171050.mp4', path: '/sdcard/DCIM/Camera/20240307_171050.mp4', file_type: 'File', size_bytes: 142000000, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709842000, modified_str: '2024-03-07 17:10', is_hidden: false, extension: 'mp4' },
-    { name: '20240308_091530.jpg', path: '/sdcard/DCIM/Camera/20240308_091530.jpg', file_type: 'File', size_bytes: 6150000, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709890000, modified_str: '2024-03-08 09:15', is_hidden: false, extension: 'jpg' },
+  '/storage/emulated': [
+    { name: '0', path: '/storage/emulated/0', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709840000, modified_str: '2024-03-07 12:00', is_hidden: false },
   ],
-  '/sdcard/Download': [
-    { name: 'Telegram', path: '/sdcard/Download/Telegram', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709940000, modified_str: '2024-03-08 11:20', is_hidden: false },
-    { name: 'F-Droid.apk', path: '/sdcard/Download/F-Droid.apk', file_type: 'File', size_bytes: 12400000, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709940000, modified_str: '2024-03-08 11:20', is_hidden: false, extension: 'apk' },
-    { name: 'kernel_headers_arm64.tar.gz', path: '/sdcard/Download/kernel_headers_arm64.tar.gz', file_type: 'File', size_bytes: 48900000, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709740000, modified_str: '2024-03-06 14:10', is_hidden: false, extension: 'gz' },
+  '/storage/emulated/0': [...CANONICAL_INTERNAL_STORAGE],
+  '/sdcard': CANONICAL_INTERNAL_STORAGE.map(entry => ({
+    ...entry,
+    path: entry.path.replace('/storage/emulated/0', '/sdcard'),
+  })),
+  '/storage/emulated/0/DCIM': [
+    { name: 'Camera', path: '/storage/emulated/0/DCIM/Camera', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709840000, modified_str: '2024-03-07 16:40', is_hidden: false },
+    { name: 'Screenshots', path: '/storage/emulated/0/DCIM/Screenshots', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709740000, modified_str: '2024-03-06 12:15', is_hidden: false },
+  ],
+  '/storage/emulated/0/DCIM/Camera': [
+    { name: '20240307_164012.jpg', path: '/storage/emulated/0/DCIM/Camera/20240307_164012.jpg', file_type: 'File', size_bytes: 8420000, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709840000, modified_str: '2024-03-07 16:40', is_hidden: false, extension: 'jpg' },
+    { name: '20240307_171050.mp4', path: '/storage/emulated/0/DCIM/Camera/20240307_171050.mp4', file_type: 'File', size_bytes: 142000000, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709842000, modified_str: '2024-03-07 17:10', is_hidden: false, extension: 'mp4' },
+    { name: '20240308_091530.jpg', path: '/storage/emulated/0/DCIM/Camera/20240308_091530.jpg', file_type: 'File', size_bytes: 6150000, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709890000, modified_str: '2024-03-08 09:15', is_hidden: false, extension: 'jpg' },
+  ],
+  '/storage/emulated/0/Download': [
+    { name: 'Telegram', path: '/storage/emulated/0/Download/Telegram', file_type: 'Directory', size_bytes: 4096, permissions: 'drwxrwx--x', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709940000, modified_str: '2024-03-08 11:20', is_hidden: false },
+    { name: 'F-Droid.apk', path: '/storage/emulated/0/Download/F-Droid.apk', file_type: 'File', size_bytes: 12400000, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709940000, modified_str: '2024-03-08 11:20', is_hidden: false, extension: 'apk' },
+    { name: 'kernel_headers_arm64.tar.gz', path: '/storage/emulated/0/Download/kernel_headers_arm64.tar.gz', file_type: 'File', size_bytes: 48900000, permissions: '-rw-rw----', owner: 'root', group: 'sdcard_rw', modified_epoch: 1709740000, modified_str: '2024-03-06 14:10', is_hidden: false, extension: 'gz' },
   ],
 };
 
@@ -430,9 +450,29 @@ class SimulatedAdbEngine {
   }
 
   async listFiles(_serial: string, path: string): Promise<FileEntry[]> {
-    const clean = path.endsWith('/') && path.length > 1 ? path.slice(0, -1) : path;
+    const target = !path || path.trim() === '' ? '/storage/emulated/0' : path.trim();
+    const clean = target.endsWith('/') && target.length > 1 ? target.slice(0, -1) : target;
     if (this.fs[clean]) {
       return [...this.fs[clean]];
+    }
+
+    // Bidirectional alias resolution between /storage/emulated/0 and /sdcard
+    if (clean.startsWith('/sdcard')) {
+      const canonical = clean.replace('/sdcard', '/storage/emulated/0');
+      if (this.fs[canonical]) {
+        return this.fs[canonical].map(entry => ({
+          ...entry,
+          path: entry.path.replace('/storage/emulated/0', '/sdcard'),
+        }));
+      }
+    } else if (clean.startsWith('/storage/emulated/0')) {
+      const alias = clean.replace('/storage/emulated/0', '/sdcard');
+      if (this.fs[alias]) {
+        return this.fs[alias].map(entry => ({
+          ...entry,
+          path: entry.path.replace('/sdcard', '/storage/emulated/0'),
+        }));
+      }
     }
 
     // Default directory contents generator if path not pre-populated

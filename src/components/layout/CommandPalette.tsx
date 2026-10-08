@@ -82,7 +82,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     {
       id: 'nav-files',
       title: `${t.files}`,
-      subtitle: 'Explore internal storage /sdcard filesystem',
+      subtitle: 'Explore internal storage /storage/emulated/0 filesystem',
       icon: FolderTree,
       action: () => {
         setActiveTab('files');

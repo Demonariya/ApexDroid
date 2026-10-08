@@ -209,7 +209,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           >
             <FolderTree className="w-5 h-5 text-blue-400 group-hover:scale-110 transition-transform mb-2" />
             <span className="text-xs font-medium text-neutral-200">{t.actionBrowseFiles}</span>
-            <span className="text-[10px] text-neutral-500 mt-0.5">/sdcard tree</span>
+            <span className="text-[10px] text-neutral-500 mt-0.5">/storage/emulated/0</span>
           </button>
 
           <button
