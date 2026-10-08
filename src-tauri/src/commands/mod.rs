@@ -218,16 +218,6 @@ pub async fn launch_app(
 }
 
 #[tauri::command]
-pub async fn get_app_icon(
-    state: State<'_, Arc<AppState>>,
-    serial: String,
-    package_name: String,
-    apk_path: String,
-) -> Result<Option<String>, String> {
-    state.package_manager.get_app_icon(&serial, &package_name, &apk_path).await.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub async fn start_scrcpy(
     state: State<'_, Arc<AppState>>,
     serial: String,

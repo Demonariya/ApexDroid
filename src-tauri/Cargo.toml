@@ -30,9 +30,6 @@ chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
 async-trait = "0.1"
 sha2 = "0.10"
-base64 = "0.23.1"
-axml-parser = "0.0.2"
-zip = "8.5.1"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "processthreadsapi"] }
