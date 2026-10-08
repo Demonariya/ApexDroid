@@ -2,9 +2,12 @@ use crate::errors::{AppError, AppResult};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::process::Child;
 use tokio::sync::Mutex;
@@ -41,6 +44,7 @@ impl Default for ScrcpyConfig {
 
 pub struct ActiveSession {
     pub child: Child,
+    pub pid: Option<u32>,
     pub is_recording: bool,
     pub record_destination: Option<String>,
 }
@@ -150,8 +154,10 @@ impl ScrcpyManager {
         }
 
         info!(serial, is_recording, "Launched scrcpy session");
+        let pid = child.id();
         sessions.insert(serial.to_string(), ActiveSession {
             child,
+            pid,
             is_recording,
             record_destination: rec_dest,
         });
@@ -162,20 +168,12 @@ impl ScrcpyManager {
     pub async fn stop_mirroring(&self, serial: &str) -> AppResult<bool> {
         let mut sessions = self.sessions.lock().await;
         if let Some(mut session) = sessions.remove(serial) {
-            let _ = session.child.kill().await;
+            stop_scrcpy_child(&mut session).await?;
             info!(serial, "Terminated scrcpy session");
 
-            // If it was recording, verify output file
             if let Some(dest) = session.record_destination {
-                let p = Path::new(&dest);
-                if p.exists() {
-                    let len = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-                    if len == 0 {
-                        let _ = std::fs::remove_file(p);
-                        return Err(AppError::Scrcpy("Recorded video file is 0 bytes (empty)".to_string()));
-                    }
-                    info!(destination = %dest, size_bytes = len, "Verified saved screen recording");
-                }
+                let size = validate_recording_file(Path::new(&dest))?;
+                info!(serial, destination = %dest, size_bytes = size, "Verified playable screen recording");
             }
 
             Ok(true)
@@ -225,4 +223,118 @@ impl ScrcpyManager {
             }
         }
     }
+}
+
+
+async fn stop_scrcpy_child(session: &mut ActiveSession) -> AppResult<()> {
+    #[cfg(windows)]
+    if let Some(pid) = session.pid {
+        request_windows_close(pid);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = session.child.kill().await;
+        let _ = session.child.wait().await;
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            match session.child.try_wait() {
+                Ok(Some(_)) => return Ok(()),
+                Ok(None) if Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Ok(None) => {
+                    let _ = session.child.kill().await;
+                    let _ = session.child.wait().await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    let _ = session.child.kill().await;
+                    return Err(AppError::Scrcpy(format!("Failed waiting for scrcpy shutdown: {}", e)));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn request_windows_close(pid: u32) {
+    use std::ptr;
+    use winapi::shared::minwindef::{BOOL, DWORD, LPARAM, FALSE, TRUE};
+    use winapi::shared::windef::HWND;
+    use winapi::um::winuser::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE};
+
+    struct Context {
+        pid: DWORD,
+        hwnd: HWND,
+    }
+
+    unsafe extern "system" fn callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam as *mut Context);
+        let mut window_pid: DWORD = 0;
+        GetWindowThreadProcessId(hwnd, &mut window_pid);
+        if window_pid == ctx.pid {
+            ctx.hwnd = hwnd;
+            FALSE
+        } else {
+            TRUE
+        }
+    }
+
+    let mut ctx = Context { pid, hwnd: ptr::null_mut() };
+    unsafe {
+        EnumWindows(Some(callback), &mut ctx as *mut Context as LPARAM);
+        if !ctx.hwnd.is_null() {
+            PostMessageW(ctx.hwnd, WM_CLOSE, 0, 0);
+        }
+    }
+}
+
+fn validate_recording_file(path: &Path) -> AppResult<u64> {
+    let metadata = fs::metadata(path)
+        .map_err(|e| AppError::Scrcpy(format!("Recording output is unavailable: {}", e)))?;
+
+    if metadata.len() < 1024 {
+        let _ = fs::remove_file(path);
+        return Err(AppError::Scrcpy("Recording output is empty or incomplete.".to_string()));
+    }
+
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let mut file = fs::File::open(path)
+        .map_err(|e| AppError::Scrcpy(format!("Cannot validate recording output: {}", e)))?;
+
+    let head_len = metadata.len().min(128 * 1024) as usize;
+    let mut head = vec![0u8; head_len];
+    file.read_exact(&mut head)
+        .map_err(|e| AppError::Scrcpy(format!("Cannot read recording header: {}", e)))?;
+
+    if ext == "mp4" {
+        let tail_len = metadata.len().min(2 * 1024 * 1024) as i64;
+        let mut tail = vec![0u8; tail_len as usize];
+        file.seek(SeekFrom::End(-tail_len))
+            .map_err(|e| AppError::Scrcpy(format!("Cannot seek recording tail: {}", e)))?;
+        file.read_exact(&mut tail)
+            .map_err(|e| AppError::Scrcpy(format!("Cannot read recording tail: {}", e)))?;
+
+        let has_ftyp = head.windows(4).any(|w| w == b"ftyp");
+        let has_mdat = head.windows(4).any(|w| w == b"mdat") || tail.windows(4).any(|w| w == b"mdat");
+        let has_moov = head.windows(4).any(|w| w == b"moov") || tail.windows(4).any(|w| w == b"moov");
+
+        if !(has_ftyp && has_mdat && has_moov) {
+            return Err(AppError::Scrcpy(
+                "Recorded MP4 container is not finalized correctly; the file is not playable.".to_string(),
+            ));
+        }
+    } else if ext == "mkv" {
+        if head.len() < 4 || head[..4] != [0x1A, 0x45, 0xDF, 0xA3] {
+            return Err(AppError::Scrcpy("Recorded MKV container header is invalid.".to_string()));
+        }
+    }
+
+    Ok(metadata.len())
 }
