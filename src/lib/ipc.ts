@@ -152,6 +152,14 @@ export const ipc = {
     return adbEngine.listPackages(serial, filter);
   },
 
+  async getAppIcon(serial: string, packageName: string, apkPath: string): Promise<string | null> {
+    if (isTauriEnvironment()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<string | null>('get_app_icon', { serial, packageName, apkPath });
+    }
+    return null;
+  },
+
   async installApk(serial: string, apkPath: string, reinstall: boolean): Promise<string> {
     if (isTauriEnvironment()) {
       const { invoke } = await import('@tauri-apps/api/core');
