@@ -337,6 +337,7 @@ export default function App() {
               selectedDevice={selectedDevice}
               language={language}
               onSelectDevice={setSelectedDevice}
+              setActiveTab={setActiveTab}
               onNavigateTab={setActiveTab}
               onTakeScreenshot={handleTakeScreenshot}
               onRebootDevice={handleRebootDevice}

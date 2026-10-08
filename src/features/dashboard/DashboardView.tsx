@@ -195,7 +195,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </h2>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <button
-            onClick={() => setActiveTab('mirror')}
+            onClick={() => navigate('mirror')}
             className="flex flex-col items-center justify-center p-3.5 rounded-lg bg-[#111724] border border-neutral-800 hover:border-cyan-500/40 hover:bg-[#161e30] transition-all group"
           >
             <Cast className="w-5 h-5 text-cyan-400 group-hover:scale-110 transition-transform mb-2" />
@@ -204,7 +204,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
 
           <button
-            onClick={() => setActiveTab('files')}
+            onClick={() => navigate('files')}
             className="flex flex-col items-center justify-center p-3.5 rounded-lg bg-[#111724] border border-neutral-800 hover:border-cyan-500/40 hover:bg-[#161e30] transition-all group"
           >
             <FolderTree className="w-5 h-5 text-blue-400 group-hover:scale-110 transition-transform mb-2" />
@@ -213,7 +213,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
 
           <button
-            onClick={() => setActiveTab('apps')}
+            onClick={() => navigate('apps')}
             className="flex flex-col items-center justify-center p-3.5 rounded-lg bg-[#111724] border border-neutral-800 hover:border-cyan-500/40 hover:bg-[#161e30] transition-all group"
           >
             <Boxes className="w-5 h-5 text-emerald-400 group-hover:scale-110 transition-transform mb-2" />
