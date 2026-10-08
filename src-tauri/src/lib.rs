@@ -51,6 +51,7 @@ pub fn run() {
             commands::pull_file,
             commands::push_file,
             commands::list_packages,
+            commands::get_app_icon,
             commands::install_apk,
             commands::uninstall_app,
             commands::force_stop_app,
