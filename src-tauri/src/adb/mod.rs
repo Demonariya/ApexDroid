@@ -139,9 +139,15 @@ impl AdbClient {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         if !output.status.success() {
-            // Some tools exit non-zero but return useful output
-            if stdout.is_empty() && !stderr.is_empty() {
-                return Err(AppError::Adb(format!("Shell error: {}", stderr.trim())));
+            let combined = if stderr.is_empty() {
+                stdout.clone()
+            } else if stdout.is_empty() {
+                stderr.clone()
+            } else {
+                format!("{}: {}", stderr.trim(), stdout.trim())
+            };
+            if !combined.is_empty() {
+                return Err(AppError::Adb(format!("Shell command failed: {}", combined.trim())));
             }
         }
 

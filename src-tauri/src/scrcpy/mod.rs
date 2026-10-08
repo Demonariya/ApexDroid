@@ -2,12 +2,9 @@ use crate::errors::{AppError, AppResult};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::process::Child;
 use tokio::sync::Mutex;
@@ -44,7 +41,6 @@ impl Default for ScrcpyConfig {
 
 pub struct ActiveSession {
     pub child: Child,
-    pub pid: Option<u32>,
     pub is_recording: bool,
     pub record_destination: Option<String>,
 }
@@ -154,10 +150,8 @@ impl ScrcpyManager {
         }
 
         info!(serial, is_recording, "Launched scrcpy session");
-        let pid = child.id();
         sessions.insert(serial.to_string(), ActiveSession {
             child,
-            pid,
             is_recording,
             record_destination: rec_dest,
         });
@@ -168,12 +162,41 @@ impl ScrcpyManager {
     pub async fn stop_mirroring(&self, serial: &str) -> AppResult<bool> {
         let mut sessions = self.sessions.lock().await;
         if let Some(mut session) = sessions.remove(serial) {
-            stop_scrcpy_child(&mut session).await?;
+            if session.is_recording {
+                #[cfg(windows)]
+                {
+                    if let Some(pid) = session.child.id() {
+                        unsafe {
+                            post_wm_close_to_process(pid);
+                        }
+                    }
+                }
+
+                // Wait up to 3 seconds for graceful encoder flush and moov finalization
+                tokio::select! {
+                    _ = session.child.wait() => {
+                        info!(serial, "scrcpy finalized recording and exited cleanly");
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(3000)) => {
+                        info!(serial, "Graceful stop timed out, terminating scrcpy process");
+                        let _ = session.child.kill().await;
+                        let _ = session.child.wait().await;
+                    }
+                }
+            } else {
+                let _ = session.child.kill().await;
+                let _ = session.child.wait().await;
+            }
+
             info!(serial, "Terminated scrcpy session");
 
+            // If it was recording, verify output MP4 container has ftyp, mdat, and moov metadata
             if let Some(dest) = session.record_destination {
-                let size = validate_recording_file(Path::new(&dest))?;
-                info!(serial, destination = %dest, size_bytes = size, "Verified playable screen recording");
+                let p = Path::new(&dest);
+                // Allow OS disk cache flush
+                tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+                validate_mp4_file(p)?;
+                info!(destination = %dest, "Verified saved screen recording with valid ftyp, mdat, and moov metadata");
             }
 
             Ok(true)
@@ -225,116 +248,150 @@ impl ScrcpyManager {
     }
 }
 
-
-async fn stop_scrcpy_child(session: &mut ActiveSession) -> AppResult<()> {
-    #[cfg(windows)]
-    if let Some(pid) = session.pid {
-        request_windows_close(pid);
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = session.child.kill().await;
-        let _ = session.child.wait().await;
-        return Ok(());
-    }
-
-    #[cfg(windows)]
-    {
-        let deadline = Instant::now() + Duration::from_secs(8);
-        loop {
-            match session.child.try_wait() {
-                Ok(Some(_)) => return Ok(()),
-                Ok(None) if Instant::now() < deadline => {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                Ok(None) => {
-                    let _ = session.child.kill().await;
-                    let _ = session.child.wait().await;
-                    return Ok(());
-                }
-                Err(e) => {
-                    let _ = session.child.kill().await;
-                    return Err(AppError::Scrcpy(format!("Failed waiting for scrcpy shutdown: {}", e)));
-                }
-            }
-        }
-    }
-}
-
 #[cfg(windows)]
-fn request_windows_close(pid: u32) {
-    use std::ptr;
-    use winapi::shared::minwindef::{BOOL, DWORD, LPARAM, FALSE, TRUE};
-    use winapi::shared::windef::HWND;
-    use winapi::um::winuser::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE};
+unsafe fn post_wm_close_to_process(pid: u32) -> bool {
+    use winapi::um::winuser::{EnumWindows, PostMessageW, GetWindowThreadProcessId, WM_CLOSE, IsWindowVisible};
+    use winapi::shared::minwindef::{BOOL, LPARAM, HWND, TRUE};
 
     struct Context {
-        pid: DWORD,
-        hwnd: HWND,
+        target_pid: u32,
+        found: bool,
     }
 
-    unsafe extern "system" fn callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let ctx = &mut *(lparam as *mut Context);
-        let mut window_pid: DWORD = 0;
+        let mut window_pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, &mut window_pid);
-        if window_pid == ctx.pid {
-            ctx.hwnd = hwnd;
-            FALSE
-        } else {
-            TRUE
+        if window_pid == ctx.target_pid && IsWindowVisible(hwnd) != 0 {
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            ctx.found = true;
         }
+        TRUE
     }
 
-    let mut ctx = Context { pid, hwnd: ptr::null_mut() };
-    unsafe {
-        EnumWindows(Some(callback), &mut ctx as *mut Context as LPARAM);
-        if !ctx.hwnd.is_null() {
-            PostMessageW(ctx.hwnd, WM_CLOSE, 0, 0);
-        }
-    }
+    let mut ctx = Context { target_pid: pid, found: false };
+    EnumWindows(Some(enum_proc), &mut ctx as *mut _ as LPARAM);
+    ctx.found
 }
 
-fn validate_recording_file(path: &Path) -> AppResult<u64> {
-    let metadata = fs::metadata(path)
-        .map_err(|e| AppError::Scrcpy(format!("Recording output is unavailable: {}", e)))?;
+pub fn validate_mp4_file(path: &Path) -> AppResult<()> {
+    if !path.exists() {
+        return Err(AppError::Scrcpy(format!("Recorded video file does not exist: {:?}", path)));
+    }
+    let data = std::fs::read(path)
+        .map_err(|e| AppError::Scrcpy(format!("Failed to read recorded video file: {}", e)))?;
 
-    if metadata.len() < 1024 {
-        let _ = fs::remove_file(path);
-        return Err(AppError::Scrcpy("Recording output is empty or incomplete.".to_string()));
+    if data.len() < 32 {
+        return Err(AppError::Scrcpy("Recorded video file is too small to be a valid MP4 container".to_string()));
     }
 
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    let mut file = fs::File::open(path)
-        .map_err(|e| AppError::Scrcpy(format!("Cannot validate recording output: {}", e)))?;
+    // Verify ftyp box at the beginning:
+    // First 4 bytes are size, bytes 4..8 are b"ftyp"
+    if &data[4..8] != b"ftyp" {
+        return Err(AppError::Scrcpy("Recorded file is not a valid MP4 container: missing 'ftyp' header box".to_string()));
+    }
 
-    let head_len = metadata.len().min(128 * 1024) as usize;
-    let mut head = vec![0u8; head_len];
-    file.read_exact(&mut head)
-        .map_err(|e| AppError::Scrcpy(format!("Cannot read recording header: {}", e)))?;
+    // Scan top-level boxes for moov and mdat
+    let mut offset = 0;
+    let mut has_moov = false;
+    let mut has_mdat = false;
 
-    if ext == "mp4" {
-        let tail_len = metadata.len().min(2 * 1024 * 1024) as i64;
-        let mut tail = vec![0u8; tail_len as usize];
-        file.seek(SeekFrom::End(-tail_len))
-            .map_err(|e| AppError::Scrcpy(format!("Cannot seek recording tail: {}", e)))?;
-        file.read_exact(&mut tail)
-            .map_err(|e| AppError::Scrcpy(format!("Cannot read recording tail: {}", e)))?;
+    while offset + 8 <= data.len() {
+        let size_u32 = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+        let box_type = &data[offset + 4..offset + 8];
 
-        let has_ftyp = head.windows(4).any(|w| w == b"ftyp");
-        let has_mdat = head.windows(4).any(|w| w == b"mdat") || tail.windows(4).any(|w| w == b"mdat");
-        let has_moov = head.windows(4).any(|w| w == b"moov") || tail.windows(4).any(|w| w == b"moov");
-
-        if !(has_ftyp && has_mdat && has_moov) {
-            return Err(AppError::Scrcpy(
-                "Recorded MP4 container is not finalized correctly; the file is not playable.".to_string(),
-            ));
+        if box_type == b"moov" {
+            has_moov = true;
+        } else if box_type == b"mdat" {
+            has_mdat = true;
         }
-    } else if ext == "mkv" {
-        if head.len() < 4 || head[..4] != [0x1A, 0x45, 0xDF, 0xA3] {
-            return Err(AppError::Scrcpy("Recorded MKV container header is invalid.".to_string()));
+
+        if size_u32 == 1 {
+            if offset + 16 > data.len() {
+                break;
+            }
+            let size_u64 = u64::from_be_bytes([
+                data[offset + 8], data[offset + 9], data[offset + 10], data[offset + 11],
+                data[offset + 12], data[offset + 13], data[offset + 14], data[offset + 15],
+            ]) as usize;
+            if size_u64 < 16 {
+                break;
+            }
+            offset += size_u64;
+        } else if size_u32 == 0 {
+            break;
+        } else if size_u32 < 8 {
+            break;
+        } else {
+            offset += size_u32;
         }
     }
 
-    Ok(metadata.len())
+    if !has_moov {
+        has_moov = data.windows(4).any(|w| w == b"moov");
+    }
+    if !has_mdat {
+        has_mdat = data.windows(4).any(|w| w == b"mdat");
+    }
+
+    if !has_mdat {
+        return Err(AppError::Scrcpy("Recorded MP4 container contains no media payload ('mdat' atom missing)".to_string()));
+    }
+
+    if !has_moov {
+        return Err(AppError::Scrcpy("Recorded MP4 container is incomplete: missing finalized metadata ('moov' atom). Video cannot be played.".to_string()));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_mp4_file_complete() {
+        let tmp = std::env::temp_dir().join("test_valid.mp4");
+        let mut bytes = Vec::new();
+
+        // ftyp atom
+        bytes.extend_from_slice(&20u32.to_be_bytes());
+        bytes.extend_from_slice(b"ftypisom");
+        bytes.extend_from_slice(&512u32.to_be_bytes());
+        bytes.extend_from_slice(b"isom");
+
+        // mdat atom
+        bytes.extend_from_slice(&16u32.to_be_bytes());
+        bytes.extend_from_slice(b"mdat01234567");
+
+        // moov atom (finalized metadata)
+        bytes.extend_from_slice(&16u32.to_be_bytes());
+        bytes.extend_from_slice(b"moov01234567");
+
+        std::fs::write(&tmp, &bytes).unwrap();
+        assert!(validate_mp4_file(&tmp).is_ok());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_validate_mp4_file_truncated_missing_moov() {
+        let tmp = std::env::temp_dir().join("test_truncated.mp4");
+        let mut bytes = Vec::new();
+
+        // ftyp atom
+        bytes.extend_from_slice(&20u32.to_be_bytes());
+        bytes.extend_from_slice(b"ftypisom");
+        bytes.extend_from_slice(&512u32.to_be_bytes());
+        bytes.extend_from_slice(b"isom");
+
+        // mdat atom only (no moov)
+        bytes.extend_from_slice(&16u32.to_be_bytes());
+        bytes.extend_from_slice(b"mdat01234567");
+
+        std::fs::write(&tmp, &bytes).unwrap();
+        let res = validate_mp4_file(&tmp);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("moov"));
+        let _ = std::fs::remove_file(&tmp);
+    }
 }

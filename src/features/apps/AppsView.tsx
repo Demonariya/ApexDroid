@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Boxes,
   Play,
@@ -52,11 +52,12 @@ export const AppsView: React.FC<AppsViewProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const iconRequestsRef = useRef<Set<string>>(new Set());
 
   // Confirmation dialogs
   const [uninstallTarget, setUninstallTarget] = useState<AppPackage | null>(null);
   const [clearDataTarget, setClearDataTarget] = useState<AppPackage | null>(null);
+
+  const requestedIconsRef = React.useRef<Set<string>>(new Set());
 
   const t = translations[language];
 
@@ -77,58 +78,51 @@ export const AppsView: React.FC<AppsViewProps> = ({
     fetchPackages();
   }, [selectedDevice?.serial, filter]);
 
-  useEffect(() => {
-    iconRequestsRef.current.clear();
-  }, [selectedDevice?.serial]);
-
+  // Lazy bounded background icon extraction (concurrency: 3)
   useEffect(() => {
     if (!selectedDevice || packages.length === 0) return;
 
-    let cancelled = false;
-    const queue = packages.filter(
-      (pkg) => !pkg.icon_base64 && !iconRequestsRef.current.has(pkg.package_name)
+    let isMounted = true;
+    const serial = selectedDevice.serial;
+    const needed = packages.filter(
+      (p) => !p.icon_base64 && !requestedIconsRef.current.has(`${serial}:${p.package_name}`)
     );
 
-    queue.forEach((pkg) => iconRequestsRef.current.add(pkg.package_name));
-    if (queue.length === 0) return;
+    if (needed.length === 0) return;
 
-    let cursor = 0;
-    const worker = async () => {
-      while (!cancelled) {
-        const index = cursor++;
-        if (index >= queue.length) return;
-        const pkg = queue[index];
+    const BATCH_SIZE = 3;
+    let index = 0;
 
-        try {
-          const icon = await ipc.getAppIcon(
-            selectedDevice.serial,
-            pkg.package_name,
-            pkg.apk_path
-          );
+    const fetchNext = async () => {
+      while (index < needed.length && isMounted) {
+        const batch = needed.slice(index, index + BATCH_SIZE);
+        index += BATCH_SIZE;
 
-          if (!cancelled && icon) {
-            setPackages((current) =>
-              current.map((item) =>
-                item.package_name === pkg.package_name
-                  ? { ...item, icon_base64: icon }
-                  : item
-              )
-            );
-          }
-        } catch {
-          // Some packages are not readable through adb; retain the fallback icon.
-        }
+        await Promise.all(
+          batch.map(async (pkg) => {
+            const key = `${serial}:${pkg.package_name}`;
+            requestedIconsRef.current.add(key);
+            try {
+              const icon = await ipc.getAppIcon(serial, pkg.package_name, pkg.apk_path);
+              if (icon && isMounted) {
+                setPackages((prev) =>
+                  prev.map((p) => (p.package_name === pkg.package_name ? { ...p, icon_base64: icon } : p))
+                );
+              }
+            } catch {
+              // Ignore failure, fallback icon remains active
+            }
+          })
+        );
       }
     };
 
-    void Promise.all(
-      Array.from({ length: Math.min(4, queue.length) }, () => worker())
-    );
+    fetchNext();
 
     return () => {
-      cancelled = true;
+      isMounted = false;
     };
-  }, [packages, selectedDevice?.serial]);
+  }, [packages.length, selectedDevice?.serial]);
 
   const handleLaunch = async (pkg: AppPackage) => {
     if (!selectedDevice) return;
@@ -394,15 +388,7 @@ export const AppsView: React.FC<AppsViewProps> = ({
                       <div className="flex items-center gap-2.5">
                         <div className="w-7 h-7 rounded-lg bg-neutral-800/80 border border-neutral-700 flex items-center justify-center shrink-0 overflow-hidden">
                           {pkg.icon_base64 ? (
-                            <img
-                              src={pkg.icon_base64}
-                              alt=""
-                              className="w-full h-full object-cover"
-                              loading="lazy"
-                              onError={(e) => {
-                                e.currentTarget.style.display = 'none';
-                              }}
-                            />
+                            <img src={pkg.icon_base64} alt="" className="w-5 h-5 object-contain rounded" />
                           ) : (
                             <Boxes className="w-3.5 h-3.5 text-cyan-400" />
                           )}

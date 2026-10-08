@@ -102,7 +102,15 @@ export const FileManagerView: React.FC<FileManagerViewProps> = ({
 
   useEffect(() => {
     if (selectedDevice) {
-      fetchDirectory(currentPath);
+      ipc.resolveSharedStorageRoot(selectedDevice.serial)
+        .then((resolved) => {
+          setCurrentPath(resolved);
+          setPathInputValue(resolved);
+          fetchDirectory(resolved);
+        })
+        .catch(() => {
+          fetchDirectory(currentPath);
+        });
     }
   }, [selectedDevice?.serial]);
 

@@ -68,6 +68,14 @@ pub async fn pair_wireless_device(
 }
 
 #[tauri::command]
+pub async fn resolve_shared_storage_root(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+) -> Result<String, String> {
+    state.filesystem_manager.resolve_shared_storage_root(&serial).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn list_files(
     state: State<'_, Arc<AppState>>,
     serial: String,
@@ -207,6 +215,16 @@ pub async fn launch_app(
     package_name: String,
 ) -> Result<(), String> {
     state.package_manager.launch_app(&serial, &package_name).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_app_icon(
+    state: State<'_, Arc<AppState>>,
+    serial: String,
+    package_name: String,
+    apk_path: String,
+) -> Result<Option<String>, String> {
+    state.package_manager.get_app_icon(&serial, &package_name, &apk_path).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

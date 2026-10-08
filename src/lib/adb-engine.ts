@@ -449,6 +449,14 @@ class SimulatedAdbEngine {
     return '* daemon not running; starting now at tcp:5037\n* daemon started successfully';
   }
 
+  async resolveSharedStorageRoot(_serial: string): Promise<string> {
+    return '/storage/emulated/0';
+  }
+
+  async getAppIcon(_serial: string, _packageName: string, _apkPath: string): Promise<string | null> {
+    return null;
+  }
+
   async listFiles(_serial: string, path: string): Promise<FileEntry[]> {
     const target = !path || path.trim() === '' ? '/storage/emulated/0' : path.trim();
     const clean = target.endsWith('/') && target.length > 1 ? target.slice(0, -1) : target;

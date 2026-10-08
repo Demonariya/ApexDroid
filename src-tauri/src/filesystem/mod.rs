@@ -41,11 +41,42 @@ pub struct TransferProgress {
 
 pub struct FilesystemManager {
     adb: Arc<AdbClient>,
+    resolved_roots: Arc<parking_lot::RwLock<std::collections::HashMap<String, String>>>,
 }
 
 impl FilesystemManager {
     pub fn new(adb: Arc<AdbClient>) -> Self {
-        Self { adb }
+        Self {
+            adb,
+            resolved_roots: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    pub async fn resolve_shared_storage_root(&self, serial: &str) -> AppResult<String> {
+        if let Some(cached) = self.resolved_roots.read().get(serial) {
+            return Ok(cached.clone());
+        }
+
+        // Step 1: Test canonical Android shared storage path /storage/emulated/0
+        let test_canonical = self.adb.run_shell(serial, "ls -d /storage/emulated/0").await;
+        let path = match test_canonical {
+            Ok(ref out) if !out.contains("No such file") && !out.contains("not found") => {
+                "/storage/emulated/0".to_string()
+            }
+            _ => {
+                // Step 2: Fallback to /sdcard legacy alias
+                let test_sdcard = self.adb.run_shell(serial, "ls -d /sdcard").await;
+                match test_sdcard {
+                    Ok(ref out) if !out.contains("No such file") && !out.contains("not found") => {
+                        "/sdcard".to_string()
+                    }
+                    _ => "/storage/emulated/0".to_string(),
+                }
+            }
+        };
+
+        self.resolved_roots.write().insert(serial.to_string(), path.clone());
+        Ok(path)
     }
 
     pub async fn list_directory(&self, serial: &str, path: &str) -> AppResult<Vec<FileEntry>> {

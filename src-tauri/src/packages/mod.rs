@@ -1,15 +1,9 @@
-use crate::adb::{create_adb_command, validate_identifier, validate_serial, AdbClient};
+use crate::adb::{validate_identifier, AdbClient};
 use crate::errors::{AppError, AppResult};
-use axml_parser::{AXMLPrinter, ARSCParser};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::Read;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use zip::ZipArchive;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppPackage {
@@ -27,66 +21,15 @@ pub struct AppPackage {
 
 pub struct PackageManager {
     adb: Arc<AdbClient>,
-    icon_cache: Arc<RwLock<HashMap<String, Option<String>>>>,
+    icon_cache: Arc<parking_lot::RwLock<std::collections::HashMap<String, String>>>,
 }
 
 impl PackageManager {
     pub fn new(adb: Arc<AdbClient>) -> Self {
         Self {
             adb,
-            icon_cache: Arc::new(RwLock::new(HashMap::new())),
+            icon_cache: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         }
-    }
-
-    pub async fn get_app_icon(
-        &self,
-        serial: &str,
-        package_name: &str,
-        apk_path: &str,
-    ) -> AppResult<Option<String>> {
-        validate_serial(serial)?;
-        validate_identifier(package_name)?;
-
-        let key = format!("{}::{}::{}", serial, package_name, apk_path);
-        if let Some(cached) = self.icon_cache.read().get(&key) {
-            return Ok(cached.clone());
-        }
-
-        if apk_path.trim().is_empty() {
-            self.icon_cache.write().insert(key, None);
-            return Ok(None);
-        }
-
-        let temp_name = format!(
-            "apexdroid_icon_{}_{}_{}.apk",
-            sanitize_temp_component(serial),
-            sanitize_temp_component(package_name),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        );
-        let temp_path = std::env::temp_dir().join(temp_name);
-
-        let bin = self.adb.get_adb_binary();
-        let destination = temp_path.to_string_lossy().to_string();
-        let output = create_adb_command(&bin)
-            .args(["-s", serial, "pull", apk_path, &destination])
-            .output()
-            .await
-            .map_err(|e| AppError::Package(format!("Failed to extract APK for {}: {}", package_name, e)))?;
-
-        if !output.status.success() || !temp_path.exists() {
-            let _ = fs::remove_file(&temp_path);
-            self.icon_cache.write().insert(key, None);
-            return Ok(None);
-        }
-
-        let parse_path = temp_path.clone();
-        let icon = tokio::task::spawn_blocking(move || extract_icon_from_apk(&parse_path))
-            .await
-            .map_err(|e| AppError::Package(format!("Icon extraction task failed: {}", e)))??;
-
-        let _ = fs::remove_file(&temp_path);
-        self.icon_cache.write().insert(key, icon.clone());
-        Ok(icon)
     }
 
     pub async fn list_packages(&self, serial: &str, filter: &str) -> AppResult<Vec<AppPackage>> {
@@ -178,7 +121,10 @@ impl PackageManager {
     pub async fn force_stop(&self, serial: &str, package_name: &str) -> AppResult<()> {
         validate_identifier(package_name)?;
         let cmd = format!("am force-stop {}", package_name);
-        self.adb.run_shell(serial, &cmd).await?;
+        let out = self.adb.run_shell(serial, &cmd).await?;
+        if out.contains("Error") || out.contains("Exception") {
+            return Err(AppError::Package(format!("Force stop failed: {}", out.trim())));
+        }
         Ok(())
     }
 
@@ -197,7 +143,8 @@ impl PackageManager {
         let action = if enabled { "enable" } else { "disable-user --user 0" };
         let cmd = format!("pm {} {}", action, package_name);
         let out = self.adb.run_shell(serial, &cmd).await?;
-        if out.contains("Error") || out.contains("Exception") {
+        let lower = out.to_lowercase();
+        if lower.contains("error") || lower.contains("exception") || lower.contains("failure") || lower.contains("killed") {
             return Err(AppError::Package(format!("Set enabled status failed: {}", out.trim())));
         }
         Ok(())
@@ -207,10 +154,58 @@ impl PackageManager {
         validate_identifier(package_name)?;
         let cmd = format!("monkey -p {} -c android.intent.category.LAUNCHER 1", package_name);
         let out = self.adb.run_shell(serial, &cmd).await?;
-        if out.contains("No activities found") {
+        if out.contains("No activities found") || out.contains("** Error") || out.contains("Cannot find") {
             return Err(AppError::Package(format!("Cannot launch {}: No default launcher activity found", package_name)));
         }
         Ok(())
+    }
+
+    pub async fn get_app_icon(&self, serial: &str, package_name: &str, apk_path: &str) -> AppResult<Option<String>> {
+        validate_identifier(package_name)?;
+        let cache_key = format!("{}:{}:{}", serial, package_name, apk_path);
+        if let Some(cached) = self.icon_cache.read().get(&cache_key) {
+            return Ok(Some(cached.clone()));
+        }
+
+        let escaped_apk = crate::adb::escape_shell_arg(apk_path);
+        let list_cmd = format!(
+            "unzip -l {} | grep -E 'res/(mipmap|drawable)[^/]+/.*(ic_launcher|icon|app_icon).*\\.(png|webp)'",
+            escaped_apk
+        );
+        let list_out = self.adb.run_shell(serial, &list_cmd).await.unwrap_or_default();
+
+        let mut candidates: Vec<String> = list_out
+            .lines()
+            .filter_map(|line| {
+                line.split_whitespace().last().map(|s| s.trim().to_string())
+            })
+            .filter(|path| path.ends_with(".png") || path.ends_with(".webp"))
+            .collect();
+
+        candidates.sort_by_key(|c| {
+            if c.contains("xxxhdpi") { 0 }
+            else if c.contains("xxhdpi") { 1 }
+            else if c.contains("xhdpi") { 2 }
+            else if c.contains("hdpi") { 3 }
+            else if c.contains("mdpi") { 4 }
+            else { 5 }
+        });
+
+        if let Some(best_entry) = candidates.first() {
+            let escaped_entry = crate::adb::escape_shell_arg(best_entry);
+            let cat_cmd = format!("unzip -p {} {} | base64", escaped_apk, escaped_entry);
+            if let Ok(b64_out) = self.adb.run_shell(serial, &cat_cmd).await {
+                let b64_clean: String = b64_out.chars().filter(|c| !c.is_whitespace()).collect();
+                if b64_clean.len() > 100 {
+                    let mime = if best_entry.ends_with(".webp") { "image/webp" } else { "image/png" };
+                    let data_url = format!("data:{};base64,{}", mime, b64_clean);
+                    self.icon_cache.write().insert(cache_key, data_url.clone());
+                    return Ok(Some(data_url));
+                }
+            }
+        }
+
+        Ok(None)
     }
 }
 
@@ -283,174 +278,4 @@ mod tests {
         assert_eq!(sys.is_system, true);
         assert_eq!(sys.is_enabled, true);
     }
-}
-
-
-fn sanitize_temp_component(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' { c } else { '_' })
-        .take(80)
-        .collect()
-}
-
-fn extract_icon_from_apk(apk_path: &Path) -> AppResult<Option<String>> {
-    let file = fs::File::open(apk_path)
-        .map_err(|e| AppError::Package(format!("Cannot open APK for icon extraction: {}", e)))?;
-    let mut archive = ZipArchive::new(file)
-        .map_err(|e| AppError::Package(format!("Cannot read APK archive: {}", e)))?;
-
-    let manifest = {
-        let mut entry = archive
-            .by_name("AndroidManifest.xml")
-            .map_err(|_| AppError::Package("APK does not contain AndroidManifest.xml".to_string()))?;
-        let mut data = Vec::new();
-        entry.read_to_end(&mut data)
-            .map_err(|e| AppError::Package(format!("Cannot read AndroidManifest.xml: {}", e)))?;
-        data
-    };
-
-    let printer = AXMLPrinter::new(&manifest);
-    let xml = String::from_utf8_lossy(&printer.get_xml(false)).to_string();
-    let icon_refs = extract_icon_references(&xml);
-    let mut candidates = Vec::<String>::new();
-
-    if let Ok(mut resources_entry) = archive.by_name("resources.arsc") {
-        let mut arsc_data = Vec::new();
-        resources_entry.read_to_end(&mut arsc_data)
-            .map_err(|e| AppError::Package(format!("Cannot read resources.arsc: {}", e)))?;
-
-        if let Ok(arsc) = ARSCParser::new(&arsc_data) {
-            for icon_ref in &icon_refs {
-                if let Ok((id, _)) = ARSCParser::parse_id(icon_ref) {
-                    for entry in arsc.all_entries.iter().filter(|e| e.id == id) {
-                        if let Some(value) = &entry.value {
-                            if is_image_path(value) {
-                                candidates.push(value.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    for icon_ref in &icon_refs {
-        if let Some((resource_type, resource_name)) = parse_named_resource(icon_ref) {
-            for i in 0..archive.len() {
-                let entry = archive.by_index(i)
-                    .map_err(|e| AppError::Package(format!("Cannot inspect APK entry: {}", e)))?;
-                let name = entry.name().to_string();
-                if name.starts_with("res/")
-                    && is_image_path(&name)
-                    && name.contains(&format!("/{resource_name}."))
-                    && (resource_type.is_empty() || name.contains(&format!("/{resource_type}-")))
-                {
-                    candidates.push(name);
-                }
-            }
-        }
-    }
-
-    if candidates.is_empty() {
-        for i in 0..archive.len() {
-            let entry = archive.by_index(i)
-                .map_err(|e| AppError::Package(format!("Cannot inspect APK entry: {}", e)))?;
-            let name = entry.name().to_ascii_lowercase();
-            if name.starts_with("res/mipmap")
-                && (name.contains("ic_launcher") || name.contains("launcher"))
-                && is_image_path(&name)
-            {
-                candidates.push(entry.name().to_string());
-            }
-        }
-    }
-
-    candidates.sort_by_key(|path| icon_rank(path));
-    candidates.dedup();
-
-    for path in candidates {
-        if let Ok(data) = read_zip_file(&mut archive, &path) {
-            return Ok(Some(format!(
-                "data:{};base64,{}",
-                mime_for_path(&path),
-                BASE64.encode(data)
-            )));
-        }
-    }
-
-    Ok(None)
-}
-
-fn extract_icon_references(xml: &str) -> Vec<String> {
-    let mut refs = Vec::new();
-    if let Some(app_start) = xml.find("<application") {
-        if let Some(end) = xml[app_start..].find('>') {
-            let app_tag = &xml[app_start..app_start + end];
-            for attr in ["android:icon", "android:roundIcon"] {
-                if let Some(pos) = app_tag.find(&format!("{attr}=\"")) {
-                    let start = pos + attr.len() + 2;
-                    if let Some(rest) = app_tag.get(start..) {
-                        if let Some(end_quote) = rest.find('"') {
-                            let value = rest[..end_quote].to_string();
-                            if value.starts_with('@') {
-                                refs.push(value);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    refs
-}
-
-fn parse_named_resource(reference: &str) -> Option<(String, String)> {
-    let value = reference.strip_prefix('@')?.split_once('/')?;
-    let resource_type = value.0.trim().to_string();
-    let resource_name = value.1.trim().to_string();
-    if resource_type.is_empty() || resource_name.is_empty() {
-        None
-    } else {
-        Some((resource_type, resource_name))
-    }
-}
-
-fn is_image_path(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".png")
-        || lower.ends_with(".webp")
-        || lower.ends_with(".jpg")
-        || lower.ends_with(".jpeg")
-}
-
-fn icon_rank(path: &str) -> u8 {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".png") {
-        if lower.contains("xxxhdpi") { return 0; }
-        if lower.contains("xxhdpi") { return 1; }
-        if lower.contains("xhdpi") { return 2; }
-        if lower.contains("hdpi") { return 3; }
-        if lower.contains("mdpi") { return 4; }
-        return 5;
-    }
-    10
-}
-
-fn mime_for_path(path: &str) -> &'static str {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".webp") {
-        "image/webp"
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "image/jpeg"
-    } else {
-        "image/png"
-    }
-}
-
-fn read_zip_file(archive: &mut ZipArchive<fs::File>, path: &str) -> std::io::Result<Vec<u8>> {
-    let mut entry = archive.by_name(path)?;
-    let mut data = Vec::new();
-    entry.read_to_end(&mut data)?;
-    Ok(data)
 }

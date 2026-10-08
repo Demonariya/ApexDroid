@@ -96,6 +96,14 @@ export const ipc = {
     return adbEngine.restartAdb();
   },
 
+  async resolveSharedStorageRoot(serial: string): Promise<string> {
+    if (isTauriEnvironment()) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<string>('resolve_shared_storage_root', { serial });
+    }
+    return adbEngine.resolveSharedStorageRoot(serial);
+  },
+
   async listFiles(serial: string, path: string): Promise<FileEntry[]> {
     if (isTauriEnvironment()) {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -157,7 +165,7 @@ export const ipc = {
       const { invoke } = await import('@tauri-apps/api/core');
       return await invoke<string | null>('get_app_icon', { serial, packageName, apkPath });
     }
-    return null;
+    return adbEngine.getAppIcon(serial, packageName, apkPath);
   },
 
   async installApk(serial: string, apkPath: string, reinstall: boolean): Promise<string> {

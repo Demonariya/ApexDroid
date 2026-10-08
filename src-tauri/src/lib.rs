@@ -44,6 +44,7 @@ pub fn run() {
             commands::reboot_device,
             commands::connect_wireless_device,
             commands::pair_wireless_device,
+            commands::resolve_shared_storage_root,
             commands::list_files,
             commands::create_directory,
             commands::delete_file,
