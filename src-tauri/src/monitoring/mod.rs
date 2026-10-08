@@ -52,6 +52,7 @@ impl DeviceMonitor {
     }
 
     pub fn start_polling(&self, app_handle: AppHandle, interval_ms: u64) {
+        let interval_ms = interval_ms.max(2000);
         if self
             .is_running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)

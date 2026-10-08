@@ -49,6 +49,18 @@ pub struct RawAdbDevice {
     pub is_wireless: bool,
 }
 
+#[cfg(windows)]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+pub fn create_adb_command(bin: &str) -> Command {
+    let mut cmd = Command::new(bin);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 pub struct AdbClient {
     custom_adb_path: Arc<RwLock<Option<String>>>,
 }
@@ -77,7 +89,8 @@ impl AdbClient {
 
     pub async fn check_version(&self) -> AppResult<AdbVersion> {
         let bin = self.get_adb_binary();
-        let output = Command::new(&bin)
+        debug!(target: "process_spawn", binary = %bin, arg = "version", "Launching ADB process");
+        let output = create_adb_command(&bin)
             .arg("version")
             .output()
             .await
@@ -95,7 +108,8 @@ impl AdbClient {
 
     pub async fn list_devices(&self) -> AppResult<Vec<RawAdbDevice>> {
         let bin = self.get_adb_binary();
-        let output = Command::new(&bin)
+        debug!(target: "process_spawn", binary = %bin, "Listing connected ADB devices");
+        let output = create_adb_command(&bin)
             .args(["devices", "-l"])
             .output()
             .await
@@ -113,9 +127,9 @@ impl AdbClient {
     pub async fn run_shell(&self, serial: &str, shell_command: &str) -> AppResult<String> {
         validate_serial(serial)?;
         let bin = self.get_adb_binary();
-        debug!(serial, shell_command, "Executing ADB shell command");
+        debug!(target: "process_spawn", binary = %bin, serial, shell_command, "Executing ADB shell command");
 
-        let output = Command::new(&bin)
+        let output = create_adb_command(&bin)
             .args(["-s", serial, "shell", shell_command])
             .output()
             .await
@@ -137,8 +151,8 @@ impl AdbClient {
     pub async fn restart_server(&self) -> AppResult<String> {
         let bin = self.get_adb_binary();
         info!("Restarting ADB server...");
-        let _ = Command::new(&bin).arg("kill-server").output().await;
-        let start = Command::new(&bin).arg("start-server").output().await
+        let _ = create_adb_command(&bin).arg("kill-server").output().await;
+        let start = create_adb_command(&bin).arg("start-server").output().await
             .map_err(|e| AppError::Adb(format!("Failed to start ADB server: {}", e)))?;
 
         if !start.status.success() {
@@ -154,7 +168,7 @@ impl AdbClient {
     pub async fn connect_wireless(&self, host_port: &str) -> AppResult<String> {
         validate_host_port(host_port)?;
         let bin = self.get_adb_binary();
-        let output = Command::new(&bin)
+        let output = create_adb_command(&bin)
             .args(["connect", host_port])
             .output()
             .await
@@ -177,7 +191,7 @@ impl AdbClient {
         }
 
         let bin = self.get_adb_binary();
-        let output = Command::new(&bin)
+        let output = create_adb_command(&bin)
             .args(["pair", host_port, code.trim()])
             .output()
             .await
@@ -196,7 +210,7 @@ impl AdbClient {
     pub async fn reboot(&self, serial: &str, mode: Option<&str>) -> AppResult<String> {
         validate_serial(serial)?;
         let bin = self.get_adb_binary();
-        let mut cmd = Command::new(&bin);
+        let mut cmd = create_adb_command(&bin);
         cmd.args(["-s", serial, "reboot"]);
 
         if let Some(m) = mode {
@@ -229,7 +243,7 @@ impl AdbClient {
         validate_identifier(keycode)?;
 
         let bin = self.get_adb_binary();
-        let output = Command::new(&bin)
+        let output = create_adb_command(&bin)
             .args(["-s", serial, "shell", "input", "keyevent", keycode])
             .output()
             .await
@@ -264,7 +278,7 @@ impl AdbClient {
         let remote_tmp = format!("/sdcard/.apexdroid_screencap_{}.png", unique_id);
 
         // Step 1: capture on device
-        let cap = Command::new(&bin)
+        let cap = create_adb_command(&bin)
             .args(["-s", serial, "shell", "screencap", "-p", &remote_tmp])
             .output()
             .await
@@ -273,12 +287,12 @@ impl AdbClient {
         if !cap.status.success() {
             let err = String::from_utf8_lossy(&cap.stderr);
             // Attempt remote cleanup
-            let _ = Command::new(&bin).args(["-s", serial, "shell", "rm", "-f", &remote_tmp]).output().await;
+            let _ = create_adb_command(&bin).args(["-s", serial, "shell", "rm", "-f", &remote_tmp]).output().await;
             return Err(AppError::Adb(format!("Screenshot capture failed on device: {}", err.trim())));
         }
 
         // Step 2: pull to destination
-        let pull = Command::new(&bin)
+        let pull = create_adb_command(&bin)
             .args(["-s", serial, "pull", &remote_tmp, destination_path])
             .output()
             .await
@@ -287,7 +301,7 @@ impl AdbClient {
             });
 
         // Step 3: ALWAYS clean up remote temp file
-        let _ = Command::new(&bin)
+        let _ = create_adb_command(&bin)
             .args(["-s", serial, "shell", "rm", "-f", &remote_tmp])
             .output()
             .await;
@@ -316,7 +330,7 @@ impl AdbClient {
         let bin = self.get_adb_binary();
         let limit = if max_lines == 0 || max_lines > 2000 { 200 } else { max_lines };
 
-        let mut cmd = Command::new(&bin);
+        let mut cmd = create_adb_command(&bin);
         cmd.args(["-s", serial, "logcat", "-d", "-v", "time", "-t", &limit.to_string()]);
 
         if let Some(f) = filter {
@@ -342,7 +356,7 @@ impl AdbClient {
     pub async fn clear_logcat(&self, serial: &str) -> AppResult<()> {
         validate_serial(serial)?;
         let bin = self.get_adb_binary();
-        let output = Command::new(&bin)
+        let output = create_adb_command(&bin)
             .args(["-s", serial, "logcat", "-c"])
             .output()
             .await

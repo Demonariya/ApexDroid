@@ -82,6 +82,10 @@ impl ScrcpyManager {
 
         let bin = self.get_scrcpy_binary();
         let mut cmd = tokio::process::Command::new(&bin);
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(crate::adb::CREATE_NO_WINDOW);
+        }
 
         cmd.args(["-s", serial]);
         cmd.args(["--max-size", &config.max_size.to_string()]);

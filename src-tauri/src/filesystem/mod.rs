@@ -142,7 +142,7 @@ impl FilesystemManager {
         }
 
         let bin = self.adb.get_adb_binary();
-        let output = tokio::process::Command::new(&bin)
+        let output = crate::adb::create_adb_command(&bin)
             .args(["-s", serial, "pull", remote_clean, local_clean])
             .output()
             .await
@@ -177,7 +177,7 @@ impl FilesystemManager {
             .unwrap_or(0);
 
         let bin = self.adb.get_adb_binary();
-        let output = tokio::process::Command::new(&bin)
+        let output = crate::adb::create_adb_command(&bin)
             .args(["-s", serial, "push", local_clean, remote_clean])
             .output()
             .await

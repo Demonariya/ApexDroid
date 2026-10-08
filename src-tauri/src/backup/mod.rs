@@ -167,7 +167,7 @@ impl BackupManager {
                     let local_str = local_file.to_string_lossy().to_string();
 
                     let bin = self.adb.get_adb_binary();
-                    let pull_output = tokio::process::Command::new(&bin)
+                    let pull_output = crate::adb::create_adb_command(&bin)
                         .args(["-s", serial, "pull", remote_path, &local_str])
                         .output()
                         .await
@@ -219,7 +219,7 @@ impl BackupManager {
                 std::fs::create_dir_all(&target_sub).ok();
 
                 let bin = self.adb.get_adb_binary();
-                let pull_res = tokio::process::Command::new(&bin)
+                let pull_res = crate::adb::create_adb_command(&bin)
                     .args(["-s", serial, "pull", folder, &media_dir.to_string_lossy()])
                     .output()
                     .await
@@ -341,7 +341,7 @@ impl BackupManager {
 
             if item.item_type == "apk" {
                 let local_str = local_path.to_string_lossy().to_string();
-                let output = tokio::process::Command::new(&bin)
+                let output = crate::adb::create_adb_command(&bin)
                     .args(["-s", serial, "install", "-r", &local_str])
                     .output()
                     .await;
@@ -368,7 +368,7 @@ impl BackupManager {
                 let rel_on_device = item.relative_path.strip_prefix("media/").unwrap_or(&item.relative_path);
                 let remote_target = format!("/sdcard/{}", rel_on_device);
 
-                let output = tokio::process::Command::new(&bin)
+                let output = crate::adb::create_adb_command(&bin)
                     .args(["-s", serial, "push", &local_str, &remote_target])
                     .output()
                     .await;

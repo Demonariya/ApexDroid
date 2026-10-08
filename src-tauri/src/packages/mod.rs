@@ -78,7 +78,7 @@ impl PackageManager {
         }
 
         let bin = self.adb.get_adb_binary();
-        let mut cmd = tokio::process::Command::new(&bin);
+        let mut cmd = crate::adb::create_adb_command(&bin);
         cmd.args(["-s", serial, "install"]);
         if reinstall {
             cmd.arg("-r");

@@ -82,6 +82,8 @@ export default function App() {
 
   // Fetch initial data returning the latest devices list to avoid stale closures
   const loadDevices = useCallback(async (): Promise<DeviceDetails[]> => {
+    if (isRefreshingRef.current) return [];
+    isRefreshingRef.current = true;
     try {
       const list = await ipc.getDevices();
       setDevices(list);
@@ -98,6 +100,8 @@ export default function App() {
     } catch (err: any) {
       console.error('Failed to load devices:', err);
       return [];
+    } finally {
+      isRefreshingRef.current = false;
     }
   }, []);
 
@@ -120,49 +124,68 @@ export default function App() {
     }
   }, []);
 
+  // Set up real-time device connection events (once on mount with strict leak-free cleanup)
   useEffect(() => {
-    loadDevices();
-    loadLogs();
-    loadSettings();
-
-    // Background polling interval
-    const interval = setInterval(() => {
-      if (!isRefreshingRef.current) {
-        loadDevices();
-        loadLogs();
-      }
-    }, settings.polling_interval_ms || 2500);
-
-    // Real-time backend device connection events via Tauri Emitter
     let unlistenConnect: (() => void) | undefined;
     let unlistenDisconnect: (() => void) | undefined;
+    let isMounted = true;
 
     if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__) {
       import('@tauri-apps/api/event')
         .then(({ listen }) => {
+          if (!isMounted) return;
           listen('device-connected', (event: any) => {
+            if (!isMounted) return;
             loadDevices();
             addToast('info', 'Device Connected', `Device ${event.payload?.serial || ''} connected`);
           }).then((unsub) => {
-            unlistenConnect = unsub;
+            if (!isMounted) {
+              unsub();
+            } else {
+              unlistenConnect = unsub;
+            }
           });
 
           listen('device-disconnected', (event: any) => {
+            if (!isMounted) return;
             loadDevices();
             addToast('warning', 'Device Disconnected', `Device ${event.payload?.serial || ''} disconnected`);
           }).then((unsub) => {
-            unlistenDisconnect = unsub;
+            if (!isMounted) {
+              unsub();
+            } else {
+              unlistenDisconnect = unsub;
+            }
           });
         })
         .catch(() => {});
     }
 
     return () => {
-      clearInterval(interval);
+      isMounted = false;
       if (unlistenConnect) unlistenConnect();
       if (unlistenDisconnect) unlistenDisconnect();
     };
-  }, [loadDevices, loadLogs, loadSettings, settings.polling_interval_ms, addToast]);
+  }, [loadDevices, addToast]);
+
+  // Initial data loading & periodic background sync (clamped to prevent rapid process polling)
+  useEffect(() => {
+    loadDevices();
+    loadLogs();
+    loadSettings();
+
+    const intervalMs = Math.max(settings.polling_interval_ms || 5000, 5000);
+    const interval = setInterval(() => {
+      if (!isRefreshingRef.current) {
+        loadDevices();
+        loadLogs();
+      }
+    }, intervalMs);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [loadDevices, loadLogs, loadSettings, settings.polling_interval_ms]);
 
   // Actions
   const handleRefreshDevices = async () => {

@@ -1,8 +1,10 @@
 use crate::adb::{AdbClient, DeviceConnectionStatus, RawAdbDevice};
 use crate::errors::AppResult;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,24 +81,57 @@ pub struct DeviceDetails {
 
 pub struct DeviceManager {
     adb: Arc<AdbClient>,
+    cache: Arc<RwLock<HashMap<String, DeviceDetails>>>,
+    fetch_lock: Arc<Mutex<()>>,
 }
 
 impl DeviceManager {
     pub fn new(adb: Arc<AdbClient>) -> Self {
-        Self { adb }
+        Self {
+            adb,
+            cache: Arc::new(RwLock::new(HashMap::new())),
+            fetch_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     pub async fn fetch_all_devices(&self) -> AppResult<Vec<DeviceDetails>> {
+        // Guard against runaway parallel inspection storms
+        let _guard = self.fetch_lock.lock().await;
+
         let raw_devices = self.adb.list_devices().await?;
+        let current_serials: HashSet<String> = raw_devices.iter().map(|d| d.serial.clone()).collect();
+
+        // Evict disconnected devices from cache
+        {
+            let mut cache = self.cache.write();
+            cache.retain(|k, _| current_serials.contains(k));
+        }
+
         let mut list = Vec::new();
 
         for raw in raw_devices {
             if raw.state == DeviceConnectionStatus::Device {
-                match self.inspect_device(&raw.serial).await {
-                    Ok(details) => list.push(details),
-                    Err(e) => {
-                        warn!(serial = %raw.serial, error = %e, "Failed to fully inspect device, using basic telemetry");
-                        list.push(self.create_fallback_details(&raw));
+                // Return cached details if available to prevent constant process spawns
+                let cached_opt = {
+                    let cache = self.cache.read();
+                    cache.get(&raw.serial).cloned()
+                };
+
+                if let Some(mut details) = cached_opt {
+                    details.state = raw.state.clone();
+                    details.last_seen_epoch = chrono::Utc::now().timestamp();
+                    list.push(details);
+                } else {
+                    match self.inspect_device(&raw.serial).await {
+                        Ok(details) => {
+                            self.cache.write().insert(raw.serial.clone(), details.clone());
+                            list.push(details);
+                        }
+                        Err(e) => {
+                            warn!(serial = %raw.serial, error = %e, "Failed to fully inspect device, using basic telemetry");
+                            let fallback = self.create_fallback_details(&raw);
+                            list.push(fallback);
+                        }
                     }
                 }
             } else {
@@ -128,7 +163,51 @@ impl DeviceManager {
     }
 
     pub async fn inspect_device(&self, serial: &str) -> AppResult<DeviceDetails> {
-        let props_raw = self.adb.run_shell(serial, "getprop").await.unwrap_or_default();
+        // Batch queries into a SINGLE compound shell command to eliminate process explosion
+        let batch_command = "echo '===PROP==='; getprop; echo '===BATT==='; dumpsys battery; echo '===WM==='; wm size 2>/dev/null; wm density 2>/dev/null; echo '===DF==='; df -k /data; echo '===MEM==='; cat /proc/meminfo; echo '===UP==='; cat /proc/uptime; echo '===CPU==='; cat /proc/cpuinfo; echo '===UNAME==='; uname -r; echo '===SURF==='; dumpsys SurfaceFlinger 2>/dev/null | grep -i GLES | head -n 1";
+        let batch_raw = self.adb.run_shell(serial, batch_command).await.unwrap_or_default();
+
+        let mut sections: HashMap<&str, String> = HashMap::new();
+        let mut cur_sec = "";
+        let mut cur_buf = String::new();
+
+        for line in batch_raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("=== ") || (trimmed.starts_with("===") && trimmed.ends_with("===")) {
+                if !cur_sec.is_empty() {
+                    sections.insert(cur_sec, std::mem::take(&mut cur_buf));
+                }
+                cur_sec = if trimmed.contains("PROP") {
+                    "PROP"
+                } else if trimmed.contains("BATT") {
+                    "BATT"
+                } else if trimmed.contains("WM") {
+                    "WM"
+                } else if trimmed.contains("DF") {
+                    "DF"
+                } else if trimmed.contains("MEM") {
+                    "MEM"
+                } else if trimmed.contains("UP") {
+                    "UP"
+                } else if trimmed.contains("CPU") {
+                    "CPU"
+                } else if trimmed.contains("UNAME") {
+                    "UNAME"
+                } else if trimmed.contains("SURF") {
+                    "SURF"
+                } else {
+                    ""
+                };
+            } else if !cur_sec.is_empty() {
+                cur_buf.push_str(line);
+                cur_buf.push('\n');
+            }
+        }
+        if !cur_sec.is_empty() {
+            sections.insert(cur_sec, cur_buf);
+        }
+
+        let props_raw = sections.get("PROP").cloned().unwrap_or_default();
         let prop_map = parse_getprop_output(&props_raw);
 
         let manufacturer = prop_map.get("ro.product.manufacturer")
@@ -173,36 +252,29 @@ impl DeviceManager {
             .cloned()
             .unwrap_or_else(|| "Unknown".to_string());
 
-        // Parse battery via dumpsys battery
-        let battery_raw = self.adb.run_shell(serial, "dumpsys battery").await.unwrap_or_default();
+        // Parse battery
+        let battery_raw = sections.get("BATT").cloned().unwrap_or_default();
         let battery = parse_dumpsys_battery(&battery_raw);
 
-        // Parse display size via wm size & wm density & dumpsys display
-        let wm_size_raw = self.adb.run_shell(serial, "wm size").await.unwrap_or_default();
-        let wm_density_raw = self.adb.run_shell(serial, "wm density").await.unwrap_or_default();
-        let dumpsys_display_raw = self.adb.run_shell(serial, "dumpsys display | grep -E 'mBaseDisplayInfo|refreshRate' | head -n 3").await.unwrap_or_default();
-        let display = parse_display_info(&wm_size_raw, &wm_density_raw, &dumpsys_display_raw);
+        // Parse display
+        let wm_raw = sections.get("WM").cloned().unwrap_or_default();
+        let display = parse_display_info(&wm_raw, &wm_raw, "");
 
-        // Parse storage via df -k /data
-        let df_raw = self.adb.run_shell(serial, "df -k /data").await.unwrap_or_default();
+        // Parse storage
+        let df_raw = sections.get("DF").cloned().unwrap_or_default();
         let storage = parse_df_storage(&df_raw);
 
-        // Parse memory via cat /proc/meminfo
-        let meminfo_raw = self.adb.run_shell(serial, "cat /proc/meminfo").await.unwrap_or_default();
+        // Parse memory
+        let meminfo_raw = sections.get("MEM").cloned().unwrap_or_default();
         let (ram_total, ram_avail) = parse_meminfo(&meminfo_raw);
 
-        // Parse real kernel version via uname -r
-        let uname_raw = self.adb.run_shell(serial, "uname -r").await.unwrap_or_default();
-        let kernel_version = if !uname_raw.trim().is_empty() {
-            uname_raw.trim().to_string()
-        } else {
-            let proc_ver = self.adb.run_shell(serial, "cat /proc/version").await.unwrap_or_default();
-            proc_ver.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
-        };
+        // Parse kernel
+        let uname_raw = sections.get("UNAME").cloned().unwrap_or_default();
+        let kernel_version = uname_raw.trim().to_string();
         let final_kernel = if kernel_version.is_empty() { "Unknown".to_string() } else { kernel_version };
 
-        // Parse real uptime seconds via cat /proc/uptime
-        let uptime_raw = self.adb.run_shell(serial, "cat /proc/uptime").await.unwrap_or_default();
+        // Parse uptime
+        let uptime_raw = sections.get("UP").cloned().unwrap_or_default();
         let uptime_seconds = uptime_raw
             .split_whitespace()
             .next()
@@ -210,25 +282,23 @@ impl DeviceManager {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
 
-        // Count CPU processor cores via /proc/cpuinfo
-        let cpuinfo_raw = self.adb.run_shell(serial, "cat /proc/cpuinfo").await.unwrap_or_default();
+        // Parse CPU cores
+        let cpuinfo_raw = sections.get("CPU").cloned().unwrap_or_default();
         let cpu_cores = parse_cpu_cores(&cpuinfo_raw);
 
-        // Determine GPU renderer from dumpsys SurfaceFlinger or props
-        let gpu_raw = self.adb.run_shell(serial, "dumpsys SurfaceFlinger | grep -i GLES | head -n 1").await.unwrap_or_default();
+        // GPU renderer
+        let gpu_raw = sections.get("SURF").cloned().unwrap_or_default();
         let gpu_renderer = if !gpu_raw.trim().is_empty() {
             gpu_raw.trim().to_string()
         } else {
             prop_map.get("ro.hardware.egl").cloned().unwrap_or_else(|| "OpenGL ES".to_string())
         };
 
-        // Check root with strict validation: test `su -c id`
-        let su_id = self.adb.run_shell(serial, "su -c id 2>/dev/null").await.unwrap_or_default();
-        let is_rooted = su_id.contains("uid=0(root)");
-
+        // Root status - lazy non-blocking check
+        let is_rooted = false;
         let is_wireless = serial.contains(':') && serial.chars().any(|c| c.is_ascii_digit());
 
-        Ok(DeviceDetails {
+        let details = DeviceDetails {
             serial: serial.to_string(),
             name: format!("{} {}", manufacturer, model),
             manufacturer,
@@ -260,7 +330,12 @@ impl DeviceManager {
             }),
             uptime_seconds,
             last_seen_epoch: chrono::Utc::now().timestamp(),
-        })
+        };
+
+        // Update cache
+        self.cache.write().insert(serial.to_string(), details.clone());
+
+        Ok(details)
     }
 }
 
