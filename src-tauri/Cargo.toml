@@ -1,6 +1,6 @@
 [package]
 name = "apexdroid-desktop"
-version = "1.0.0"
+version = "1.0.1"
 description = "High-performance Android management suite powered by Rust, ADB, and Scrcpy"
 authors = ["ApexDroid Team"]
 edition = "2021"
@@ -30,6 +30,9 @@ chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
 async-trait = "0.1"
 sha2 = "0.10"
+base64 = "0.23.1"
+axml-parser = "0.0.2"
+zip = "8.5.1"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "processthreadsapi"] }
