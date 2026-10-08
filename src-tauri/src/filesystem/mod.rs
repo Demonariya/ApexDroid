@@ -215,16 +215,53 @@ pub fn parse_ls_output(output: &str, parent_path: &str) -> Vec<FileEntry> {
             _ => FileType::Other,
         };
 
-        let (owner, group, size_idx, date_idx, time_idx, name_idx) = if parts.len() >= 8 {
-            (parts[1].to_string(), parts[2].to_string(), 3, 4, 5, 6)
+        // Determine if parts[1] is the hard-link count (all digits)
+        let has_link_count = parts.get(1).map_or(false, |p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+
+        let (owner, group, size_idx, date_start_idx) = if has_link_count {
+            // Format with link count: [0]=perm, [1]=links, [2]=owner, [3]=group, [4]=size, [5]=date
+            (
+                parts.get(2).unwrap_or(&"root").to_string(),
+                parts.get(3).unwrap_or(&"sdcard").to_string(),
+                4,
+                5,
+            )
         } else {
-            ("root".to_string(), "sdcard".to_string(), 2, 3, 4, 5)
+            // Format without link count: [0]=perm, [1]=owner, [2]=group, [3]=size, [4]=date
+            (
+                parts.get(1).unwrap_or(&"root").to_string(),
+                parts.get(2).unwrap_or(&"sdcard").to_string(),
+                3,
+                4,
+            )
         };
 
         let size_bytes = parts.get(size_idx).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        let date_str = parts.get(date_idx).unwrap_or(&"");
-        let time_str = parts.get(time_idx).unwrap_or(&"");
-        let modified_str = format!("{} {}", date_str, time_str);
+
+        // Check if date starts with a month name (BSD/traditional Unix ls: Month Day Time/Year)
+        const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        let is_month_date = parts.get(date_start_idx).map_or(false, |p| MONTHS.iter().any(|m| m.eq_ignore_ascii_case(p)));
+
+        let (date_str, time_str, name_idx) = if is_month_date {
+            let m = parts.get(date_start_idx).unwrap_or(&"");
+            let d = parts.get(date_start_idx + 1).unwrap_or(&"");
+            let t = parts.get(date_start_idx + 2).unwrap_or(&"");
+            (format!("{} {}", m, d), t.to_string(), date_start_idx + 3)
+        } else {
+            let d = parts.get(date_start_idx).unwrap_or(&"");
+            let t = parts.get(date_start_idx + 1).unwrap_or(&"");
+            (d.to_string(), t.to_string(), date_start_idx + 2)
+        };
+
+        let modified_str = if time_str.is_empty() {
+            date_str
+        } else {
+            format!("{} {}", date_str, time_str)
+        };
+
+        if name_idx >= parts.len() {
+            continue;
+        }
 
         // File name is all remaining tokens joined (in case name has spaces)
         let name_parts = &parts[name_idx..];
@@ -302,5 +339,18 @@ lrwxrwxrwx  1 root root        11 2024-03-12 14:30 link_target -> /sdcard/DCIM
         assert_eq!(pdf.size_bytes, 1234567);
         assert_eq!(pdf.extension.as_deref(), Some("pdf"));
         assert_eq!(pdf.path, "/sdcard/document with spaces.pdf");
+
+        // Also test format without hard-link count
+        let sample_no_links = r#"
+drwxrwx--x root sdcard_rw 4096 2024-03-12 14:30 DCIM
+-rw-rw---- root sdcard_rw 500 2024-03-12 14:30 notes.txt
+"#;
+        let entries_no_links = parse_ls_output(sample_no_links, "/sdcard");
+        assert_eq!(entries_no_links.len(), 2);
+        assert_eq!(entries_no_links[0].name, "DCIM");
+        assert_eq!(entries_no_links[0].file_type, FileType::Directory);
+        assert_eq!(entries_no_links[1].name, "notes.txt");
+        assert_eq!(entries_no_links[1].file_type, FileType::File);
+        assert_eq!(entries_no_links[1].size_bytes, 500);
     }
 }
